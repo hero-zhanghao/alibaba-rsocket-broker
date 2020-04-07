@@ -9,6 +9,7 @@ import io.rsocket.plugins.SocketAcceptorInterceptor;
 
 import java.security.PrivateKey;
 import java.security.cert.Certificate;
+import java.util.function.Consumer;
 
 /**
  * RSocket listener builder implementation
@@ -19,8 +20,20 @@ public class RSocketListenerBuilderImpl implements RSocketListener.Builder {
     private RSocketListenerImpl rSocketListener = new RSocketListenerImpl();
 
     @Override
+    public RSocketListener.Builder host(String host) {
+        rSocketListener.host(host);
+        return this;
+    }
+
+    @Override
     public RSocketListener.Builder listen(String schema, int port) {
         rSocketListener.listen(schema, port);
+        return this;
+    }
+
+    @Override
+    public RSocketListener.Builder errorConsumer(Consumer<Throwable> errorConsumer) {
+        rSocketListener.errorConsumer(errorConsumer);
         return this;
     }
 

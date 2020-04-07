@@ -21,16 +21,13 @@ import com.alibaba.spring.boot.rsocket.broker.route.impl.ServiceMeshInspectorImp
 import com.alibaba.spring.boot.rsocket.broker.route.impl.ServiceRoutingSelectorImpl;
 import com.alibaba.spring.boot.rsocket.broker.security.AuthenticationService;
 import com.alibaba.spring.boot.rsocket.broker.security.AuthenticationServiceJwtImpl;
-import com.alibaba.spring.boot.rsocket.broker.services.ConfigController;
-import com.alibaba.spring.boot.rsocket.broker.services.ConfigurationService;
-import com.alibaba.spring.boot.rsocket.broker.services.KVStorageServiceImpl;
+import com.alibaba.spring.boot.rsocket.broker.services.*;
 import com.alibaba.spring.boot.rsocket.broker.smi.TrafficAccessControl;
 import com.alibaba.spring.boot.rsocket.broker.smi.TrafficSplit;
 import com.alibaba.spring.boot.rsocket.broker.smi.impl.TrafficAccessControlImpl;
 import com.alibaba.spring.boot.rsocket.broker.smi.impl.TrafficSplitImpl;
 import com.alibaba.spring.boot.rsocket.broker.supporting.RSocketLocalServiceAnnotationProcessor;
 import io.cloudevents.v1.CloudEventImpl;
-import io.rsocket.frame.decoder.PayloadDecoder;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -66,8 +63,8 @@ public class RSocketBrokerAutoConfiguration {
     }
 
     @Bean
-    public ServiceMeshInspector serviceMeshInspector() {
-        return new ServiceMeshInspectorImpl();
+    public ServiceMeshInspector serviceMeshInspector(RSocketBrokerProperties brokerProperties) {
+        return new ServiceMeshInspectorImpl(brokerProperties.isAuthRequired());
     }
 
     @Bean
@@ -86,16 +83,27 @@ public class RSocketBrokerAutoConfiguration {
     }
 
     @Bean
+    public AppQueryController appQueryController() {
+        return new AppQueryController();
+    }
+
+    @Bean
+    public MetricsScrapeController metricsScrapeController() {
+        return new MetricsScrapeController();
+    }
+
+    @Bean
     public RSocketBrokerHandlerRegistry rsocketResponderHandlerRegistry(@Autowired LocalReactiveServiceCaller localReactiveServiceCaller,
                                                                         @Autowired RSocketFilterChain rsocketFilterChain,
                                                                         @Autowired ServiceRoutingSelector routingSelector,
                                                                         @Autowired @Qualifier("reactiveCloudEventProcessor") TopicProcessor<CloudEventImpl> eventProcessor,
+                                                                        @Autowired @Qualifier("notificationProcessor") TopicProcessor<String> notificationProcessor,
                                                                         @Autowired AuthenticationService authenticationService,
                                                                         @Autowired RSocketBrokerManager rSocketBrokerManager,
                                                                         @Autowired ServiceMeshInspector serviceMeshInspector,
                                                                         @Autowired RSocketBrokerProperties properties) {
         return new RSocketBrokerHandlerRegistryImpl(localReactiveServiceCaller, rsocketFilterChain, routingSelector,
-                eventProcessor, authenticationService, rSocketBrokerManager, serviceMeshInspector, properties.isAuthRequired());
+                eventProcessor, notificationProcessor, authenticationService, rSocketBrokerManager, serviceMeshInspector, properties.isAuthRequired());
     }
 
     @Bean
@@ -117,7 +125,6 @@ public class RSocketBrokerAutoConfiguration {
         return builder -> {
             builder.acceptor(registry);
             builder.listen("tcp", properties.getPort());
-            builder.payloadDecoder(PayloadDecoder.ZERO_COPY);
         };
     }
 
@@ -176,6 +183,11 @@ public class RSocketBrokerAutoConfiguration {
     @Bean
     public TopicProcessor<CloudEventImpl> reactiveCloudEventProcessor() {
         return TopicProcessor.<CloudEventImpl>builder().name("cloud-events-processor").build();
+    }
+
+    @Bean
+    public TopicProcessor<String> notificationProcessor() {
+        return TopicProcessor.<String>builder().name("notifications-processor").build();
     }
 
     @Bean(initMethod = "init")

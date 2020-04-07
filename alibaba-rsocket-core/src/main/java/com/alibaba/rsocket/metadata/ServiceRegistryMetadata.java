@@ -10,7 +10,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * service registry metadata: subscribed & published services from requester
+ * service registry metadata: subscribed and published services from requester
  *
  * @author leijuan
  */
@@ -62,24 +62,18 @@ public class ServiceRegistryMetadata implements MetadataAware {
     @Override
     @JsonIgnore
     public ByteBuf getContent() {
-        return Unpooled.wrappedBuffer(JsonUtils.toJsonBytes(this));
+        try {
+            return JsonUtils.toJsonByteBuf(this);
+        } catch (Exception e) {
+            return Unpooled.EMPTY_BUFFER;
+        }
     }
 
     @Override
     public void load(ByteBuf byteBuf) throws Exception {
         JsonUtils.updateJsonValue(byteBuf, this);
     }
-
-    @Override
-    public String toText() throws Exception {
-        return JsonUtils.toJsonText(this);
-    }
-
-    @Override
-    public void load(String text) throws Exception {
-        JsonUtils.updateJsonValue(text, this);
-    }
-
+    
     public boolean containPublishedServices() {
         return published != null && !published.isEmpty();
     }

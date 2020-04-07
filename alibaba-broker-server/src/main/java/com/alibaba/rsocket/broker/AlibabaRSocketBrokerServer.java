@@ -1,11 +1,11 @@
 package com.alibaba.rsocket.broker;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.boot.SpringApplication;
+import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
-import reactor.core.publisher.Flux;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 
 /**
@@ -15,10 +15,21 @@ import java.time.LocalDateTime;
  */
 @SpringBootApplication
 public class AlibabaRSocketBrokerServer {
-    public static LocalDateTime STARTED_AT = LocalDateTime.now();
+    public static final LocalDateTime STARTED_AT = LocalDateTime.now();
 
     public static void main(String[] args) {
-        //BlockHound.install();
         SpringApplication.run(AlibabaRSocketBrokerServer.class, args);
     }
+
+    @Bean
+    MeterRegistryCustomizer<MeterRegistry> metricsCommonTags() {
+        return registry -> registry.config().commonTags("application", "alibaba-rsocket-broker");
+    }
+
+    /*@Bean
+    public RSocketListenerCustomizer websocketListenerCustomizer() {
+        return builder -> {
+            builder.listen("ws", 19999);
+        };
+    }*/
 }

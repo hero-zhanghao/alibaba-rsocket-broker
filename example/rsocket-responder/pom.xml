@@ -15,7 +15,7 @@
         <dependency>
             <groupId>com.alibaba.rsocket</groupId>
             <artifactId>alibaba-rsocket-spring-boot-starter</artifactId>
-            <version>${alibaba-cloud-broker.version}</version>
+            <version>${alibaba-rsocket.version}</version>
         </dependency>
         <dependency>
             <groupId>com.alibaba.broker.example</groupId>
@@ -29,7 +29,7 @@
         <dependency>
             <groupId>com.github.javafaker</groupId>
             <artifactId>javafaker</artifactId>
-            <version>1.0.1</version>
+            <version>1.0.2</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -38,6 +38,21 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.junit.vintage</groupId>
+                    <artifactId>junit-vintage-engine</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>junit</groupId>
+                    <artifactId>junit</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
     </dependencies>
 

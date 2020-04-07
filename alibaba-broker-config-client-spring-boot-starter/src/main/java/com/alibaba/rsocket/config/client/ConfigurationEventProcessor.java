@@ -37,24 +37,26 @@ public class ConfigurationEventProcessor {
     public void init() {
         eventProcessor.subscribe(cloudEvent -> {
             String type = cloudEvent.getAttributes().getType();
-            if ("com.alibaba.rsocket.events.ConfigEven".equalsIgnoreCase(type)) {
+            if (ConfigEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
                 handleConfigurationEvent(cloudEvent);
             }
         });
     }
 
     public void handleConfigurationEvent(CloudEventImpl<?> cloudEvent) {
+        // replyto support
+        // cloudEvent.getExtensions().get("replyto"); rsocket:///REQUEST_FNF/com.xxxx.XxxService#method
         ConfigEvent configEvent = CloudEventSupport.unwrapData(cloudEvent, ConfigEvent.class);
         // validate config content
         if (configEvent.getAppName().equalsIgnoreCase(applicationName)
-                && !RSocketConfigPropertySourceLocator.LAST_CONFIG_TEXT.equals(configEvent.getContent())) {
+                && !RSocketConfigPropertySourceLocator.getLastConfigText().equals(configEvent.getContent())) {
             Properties configProperties = RSocketConfigPropertySourceLocator.CONFIG_PROPERTIES.get(applicationName);
             if (configProperties != null) {
                 try {
                     configProperties.load(new StringReader(configEvent.getContent()));
                     log.info(RsocketErrorCode.message("RST-202200", applicationName));
                     contextRefresher.refresh();
-                    RSocketConfigPropertySourceLocator.LAST_CONFIG_TEXT = configEvent.getContent();
+                    RSocketConfigPropertySourceLocator.setLastConfigText(configEvent.getContent());
                     log.info(RsocketErrorCode.message("RST-202001"));
                 } catch (Exception e) {
                     log.info(RsocketErrorCode.message("RST-202501"), e);

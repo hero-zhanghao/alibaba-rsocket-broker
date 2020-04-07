@@ -6,13 +6,18 @@
     <parent>
         <groupId>com.alibaba.rsocket</groupId>
         <artifactId>alibaba-rsocket-broker-parent</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0-SNAPSHOT</version>
     </parent>
     <artifactId>alibaba-rsocket-core</artifactId>
     <name>Alibaba RSocket Core</name>
     <description>Alibaba RSocket core module, includes network, routing, en/decoding etc</description>
 
     <dependencies>
+        <dependency>
+            <groupId>com.alibaba.rsocket</groupId>
+            <artifactId>alibaba-rsocket-service-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <dependency>
             <groupId>io.cloudevents</groupId>
             <artifactId>cloudevents-api</artifactId>
@@ -43,6 +48,13 @@
             <groupId>io.reactivex.rxjava2</groupId>
             <artifactId>rxjava</artifactId>
             <version>${rxjava2.version}</version>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>io.reactivex.rxjava3</groupId>
+            <artifactId>rxjava</artifactId>
+            <version>${rxjava3.version}</version>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>io.projectreactor.addons</groupId>
@@ -78,7 +90,7 @@
         <dependency>
             <groupId>org.apache.avro</groupId>
             <artifactId>avro</artifactId>
-            <version>${avor.version}</version>
+            <version>${avro.version}</version>
         </dependency>
         <!--en/decoding-->
         <dependency>
@@ -107,6 +119,15 @@
             <groupId>org.roaringbitmap</groupId>
             <artifactId>RoaringBitmap</artifactId>
             <version>${roaring-bitmap.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.zipkin.brave</groupId>
+            <artifactId>brave</artifactId>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>io.projectreactor</groupId>

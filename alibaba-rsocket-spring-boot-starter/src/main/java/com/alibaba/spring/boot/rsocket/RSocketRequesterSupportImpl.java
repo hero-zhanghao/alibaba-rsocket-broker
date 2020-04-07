@@ -2,22 +2,23 @@ package com.alibaba.spring.boot.rsocket;
 
 import com.alibaba.rsocket.RSocketAppContext;
 import com.alibaba.rsocket.RSocketRequesterSupport;
+import com.alibaba.rsocket.RSocketService;
 import com.alibaba.rsocket.ServiceLocator;
 import com.alibaba.rsocket.events.ServicesExposedEvent;
+import com.alibaba.rsocket.health.RSocketServiceHealth;
 import com.alibaba.rsocket.invocation.RSocketRemoteServiceBuilder;
 import com.alibaba.rsocket.metadata.*;
-import com.alibaba.rsocket.observability.RsocketErrorCode;
-import io.cloudevents.CloudEvent;
+import com.alibaba.rsocket.observability.MetricsService;
+import com.alibaba.rsocket.transport.NetworkUtil;
 import io.cloudevents.v1.CloudEventBuilder;
 import io.cloudevents.v1.CloudEventImpl;
 import io.netty.buffer.Unpooled;
 import io.rsocket.Payload;
 import io.rsocket.SocketAcceptor;
+import io.rsocket.metadata.WellKnownMimeType;
 import io.rsocket.plugins.RSocketInterceptor;
-import io.rsocket.util.DefaultPayload;
+import io.rsocket.util.ByteBufPayload;
 import org.jetbrains.annotations.NotNull;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
@@ -26,24 +27,23 @@ import org.springframework.core.annotation.AnnotationUtils;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import static com.alibaba.rsocket.transport.NetworkUtil.getLocalIP;
 
 /**
- * RSocket Requester Support implementation
+ * RSocket Requester Support implementation: setup payload, published service, token and app info
  *
  * @author leijuan
  */
 public class RSocketRequesterSupportImpl implements RSocketRequesterSupport, ApplicationContextAware {
-    private Logger log = LoggerFactory.getLogger(RSocketRequesterSupportImpl.class);
     private Properties env;
     private RSocketProperties properties;
     private String appName;
-    private String jwtToken;
+    private char[] jwtToken;
     private ApplicationContext applicationContext;
     private SocketAcceptor socketAcceptor;
     private List<RSocketInterceptor> responderInterceptors = new ArrayList<>();
@@ -54,14 +54,15 @@ public class RSocketRequesterSupportImpl implements RSocketRequesterSupport, App
         this.properties = properties;
         this.env = env;
         this.appName = env.getProperty("spring.application.name", env.getProperty("application.name"));
-        this.jwtToken = env.getProperty("rsocket.jwt-token");
+        this.jwtToken = env.getProperty("rsocket.jwt-token", "").toCharArray();
         this.socketAcceptor = socketAcceptor;
     }
 
     @Override
     public Supplier<Payload> setupPayload() {
         return () -> {
-            RSocketCompositeMetadata compositeMetadata = constructCompositeMetadata();
+            //composite metadata with app metadata
+            RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(getAppMetadata());
             //add published in setup payload
             Set<ServiceLocator> serviceLocators = exposedServices().get();
             if (!compositeMetadata.contains(RSocketMimeType.ServiceRegistry) && !serviceLocators.isEmpty()) {
@@ -70,10 +71,10 @@ public class RSocketRequesterSupportImpl implements RSocketRequesterSupport, App
                 compositeMetadata.addMetadata(serviceRegistryMetadata);
             }
             // authentication
-            if (this.jwtToken != null && !this.jwtToken.isEmpty()) {
+            if (this.jwtToken != null && this.jwtToken.length > 0) {
                 compositeMetadata.addMetadata(new BearerTokenMetadata(this.jwtToken));
             }
-            return DefaultPayload.create(Unpooled.EMPTY_BUFFER, compositeMetadata.getContent());
+            return ByteBufPayload.create(Unpooled.EMPTY_BUFFER, compositeMetadata.getContent());
         };
     }
 
@@ -83,6 +84,7 @@ public class RSocketRequesterSupportImpl implements RSocketRequesterSupport, App
             return applicationContext.getBeansWithAnnotation(RSocketService.class)
                     .values()
                     .stream()
+                    .filter(bean -> !(bean instanceof RSocketServiceHealth || bean instanceof MetricsService))
                     .map(o -> {
                         Class<?> managedBeanClass = o.getClass();
                         RSocketService rSocketService = AnnotationUtils.findAnnotation(managedBeanClass, RSocketService.class);
@@ -117,30 +119,29 @@ public class RSocketRequesterSupportImpl implements RSocketRequesterSupport, App
                     .withTime(ZonedDateTime.now())
                     .withSource(URI.create("app://" + RSocketAppContext.ID))
                     .withType(ServicesExposedEvent.class.getCanonicalName())
-                    .withDataContentType("application/json")
+                    .withDataContentType(WellKnownMimeType.APPLICATION_JSON.getString())
                     .withData(servicesExposedEvent)
                     .build();
         };
     }
 
     @NotNull
-    private AppMetadata getAppMetadata() throws Exception {
+    private AppMetadata getAppMetadata() {
         //app metadata
         AppMetadata appMetadata = new AppMetadata();
         appMetadata.setUuid(RSocketAppContext.ID);
         appMetadata.setName(appName);
-        appMetadata.setIp(getLocalIP());
+        appMetadata.setIp(NetworkUtil.LOCAL_IP);
         appMetadata.setDevice("SpringBootApp");
         //rsocket schema
         if (env.containsKey("rsocket.schema")) {
             appMetadata.setSchema(env.getProperty("rsocket.schema"));
         }
         //rsocket port
-        if (env.containsKey("rsocket.port")) {
-            appMetadata.setPort(Integer.parseInt(env.getProperty("rsocket.port")));
-        } else {
-            appMetadata.setPort(RSocketAppContext.LISTEN_PORT);
-        }
+        appMetadata.setPort(properties.getPort());
+        //brokers
+        appMetadata.setBrokers(properties.getBrokers());
+        appMetadata.setTopology(properties.getTopology());
         //management port
         if (env.containsKey("management.server.port")) {
             appMetadata.setManagementPort(Integer.parseInt(env.getProperty("management.server.port")));
@@ -155,27 +156,23 @@ public class RSocketRequesterSupportImpl implements RSocketRequesterSupport, App
                 appMetadata.getMetadata().put(parts[0].trim().replace("rsocket.metadata.", ""), env.getProperty(key));
             }
         });
+        //power unit
+        if (appMetadata.getMetadata("power-rating") != null) {
+            appMetadata.setPowerRating(Integer.parseInt(appMetadata.getMetadata("power-rating")));
+        }
         //humans.md
         URL humansMd = this.getClass().getResource("/humans.md");
         if (humansMd != null) {
-            InputStream inputStream = humansMd.openStream();
-            byte[] bytes = new byte[inputStream.available()];
-            inputStream.read(bytes);
-            inputStream.close();
-            appMetadata.setHumansMd(new String(bytes));
+            try (InputStream inputStream = humansMd.openStream()) {
+                byte[] bytes = new byte[inputStream.available()];
+                inputStream.read(bytes);
+                inputStream.close();
+                appMetadata.setHumansMd(new String(bytes, StandardCharsets.UTF_8));
+            } catch (Exception ignore) {
+
+            }
         }
         return appMetadata;
-    }
-
-    @NotNull
-    private RSocketCompositeMetadata constructCompositeMetadata() {
-        RSocketCompositeMetadata compositeMetadata = new RSocketCompositeMetadata();
-        try {
-            compositeMetadata.addMetadata(getAppMetadata());
-            return compositeMetadata;
-        } catch (Exception ignore) {
-        }
-        return compositeMetadata;
     }
 
     @Override
@@ -199,24 +196,6 @@ public class RSocketRequesterSupportImpl implements RSocketRequesterSupport, App
 
     public void addRequesterInterceptor(RSocketInterceptor interceptor) {
         this.requestInterceptors.add(interceptor);
-    }
-
-    @NotNull
-    private RSocketCompositeMetadata constructCompositeMetaDataForBroker() {
-        //setup payload construct
-        RSocketCompositeMetadata compositeMetadata = new RSocketCompositeMetadata();
-        try {
-            //app metadata
-            compositeMetadata.addMetadata(getAppMetadata());
-            // authentication
-            if (this.jwtToken != null && !this.jwtToken.isEmpty()) {
-                compositeMetadata.addMetadata(new BearerTokenMetadata(this.jwtToken));
-            }
-            return compositeMetadata;
-        } catch (Exception e) {
-            log.error(RsocketErrorCode.message("RST-400001"), e);
-        }
-        return compositeMetadata;
     }
 
     @Override

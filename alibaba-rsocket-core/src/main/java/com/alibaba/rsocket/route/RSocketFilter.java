@@ -8,19 +8,46 @@ import reactor.core.publisher.Mono;
  *
  * @author leijuan
  */
-public interface RSocketFilter {
+public abstract class RSocketFilter {
+    private boolean enabled = true;
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
     /**
      * filter or not
      *
      * @param exchange request exchange
      * @return filter required or not
      */
-    Mono<Boolean> shouldFilter(RSocketExchange exchange);
+    public abstract Mono<Boolean> shouldFilter(RSocketExchange exchange);
 
     /**
      * run filter logic, no block code
      *
      * @param exchange request exchange
+     * @return Mono void
      */
-    Mono<Void> run(RSocketExchange exchange);
+    public abstract Mono<Void> run(RSocketExchange exchange);
+
+    /**
+     * filter name or description
+     *
+     * @return filter name
+     */
+   public abstract String name();
+
+    /**
+     * refresh filter logic dynamically
+     *
+     * @param properties properties configuration
+     */
+    public void refresh(String properties) {
+
+    }
 }

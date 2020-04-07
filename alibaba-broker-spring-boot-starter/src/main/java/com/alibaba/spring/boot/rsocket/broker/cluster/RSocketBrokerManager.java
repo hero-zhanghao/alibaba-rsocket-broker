@@ -1,6 +1,7 @@
 package com.alibaba.spring.boot.rsocket.broker.cluster;
 
 import com.alibaba.rsocket.ServiceLocator;
+import io.cloudevents.v1.CloudEventImpl;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -15,6 +16,8 @@ public interface RSocketBrokerManager {
 
     Flux<Collection<RSocketBroker>> requestAll();
 
+    RSocketBroker localBroker();
+
     Collection<RSocketBroker> currentBrokers();
 
     Mono<RSocketBroker> findByIp(String ip);
@@ -24,4 +27,7 @@ public interface RSocketBrokerManager {
     Boolean isStandAlone();
 
     void stopLocalBroker();
+
+    Mono<String> broadcast(CloudEventImpl<?> cloudEvent);
+
 }

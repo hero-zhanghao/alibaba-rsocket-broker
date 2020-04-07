@@ -1,7 +1,7 @@
 package com.alibaba.rsocket.metadata;
 
-import com.google.common.base.Joiner;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.rsocket.metadata.WellKnownMimeType;
 
@@ -41,6 +41,13 @@ public class MessageAcceptMimeTypesMetadata implements MetadataAware {
         this.byteBufLength = wellKnownMimeTypes.length;
     }
 
+    public MessageAcceptMimeTypesMetadata(RSocketMimeType... rsocketMimeTypes) {
+        for (RSocketMimeType rsocketMimeType : rsocketMimeTypes) {
+            this.mimeTypes.add(rsocketMimeType.getId());
+        }
+        this.byteBufLength = rsocketMimeTypes.length;
+    }
+
     @Override
     public RSocketMimeType rsocketMimeType() {
         return RSocketMimeType.MessageAcceptMimeTypes;
@@ -51,14 +58,23 @@ public class MessageAcceptMimeTypesMetadata implements MetadataAware {
         return RSocketMimeType.MessageAcceptMimeTypes.getType();
     }
 
-    @Override
+    public RSocketMimeType getFirstAcceptType() {
+        Object mimeType = mimeTypes.get(0);
+        if (mimeType instanceof Byte) {
+            return RSocketMimeType.valueOf((Byte) mimeType);
+        } else if (mimeType instanceof String) {
+            return RSocketMimeType.valueOfType((String) mimeType);
+        }
+        return null;
+    }
+
     public ByteBuf getContent() {
-        ByteBuf buffer = Unpooled.buffer(this.byteBufLength);
+        ByteBuf buffer = PooledByteBufAllocator.DEFAULT.buffer(this.byteBufLength);
         for (Object mimeType : mimeTypes) {
             if (mimeType instanceof Byte) {
                 buffer.writeByte((byte) ((byte) mimeType | 0x80));
             } else if (mimeType instanceof String) {
-                byte[] bytes = ((String) mimeType).getBytes();
+                byte[] bytes = ((String) mimeType).getBytes(StandardCharsets.US_ASCII);
                 buffer.writeByte(bytes.length);
                 buffer.writeBytes(bytes);
             }
@@ -67,8 +83,8 @@ public class MessageAcceptMimeTypesMetadata implements MetadataAware {
     }
 
     @Override
-    public void load(ByteBuf byteBuf) throws Exception {
-        this.byteBufLength = byteBuf.capacity();
+    public void load(ByteBuf byteBuf) {
+        this.byteBufLength = byteBuf.readableBytes();
         while (byteBuf.isReadable()) {
             byte firstByte = byteBuf.readByte();
             if (firstByte < 0) {
@@ -76,23 +92,6 @@ public class MessageAcceptMimeTypesMetadata implements MetadataAware {
                 this.mimeTypes.add(WellKnownMimeType.fromIdentifier(mimeTypeId).getString());
             } else {
                 byteBuf.readCharSequence(firstByte, StandardCharsets.US_ASCII);
-            }
-        }
-    }
-
-    @Override
-    public String toText() throws Exception {
-        return Joiner.on(',').join(mimeTypes);
-    }
-
-    @Override
-    public void load(String text) throws Exception {
-        String[] parts = text.split(",");
-        for (String part : parts) {
-            if (part.contains("/")) {
-                this.mimeTypes.add(part);
-            } else {
-                this.mimeTypes.add(Byte.valueOf(part));
             }
         }
     }

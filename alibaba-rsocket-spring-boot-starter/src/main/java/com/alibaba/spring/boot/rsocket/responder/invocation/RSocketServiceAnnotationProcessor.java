@@ -1,8 +1,9 @@
 package com.alibaba.spring.boot.rsocket.responder.invocation;
 
+import com.alibaba.rsocket.RSocketService;
 import com.alibaba.rsocket.rpc.LocalReactiveServiceCallerImpl;
 import com.alibaba.spring.boot.rsocket.RSocketProperties;
-import com.alibaba.spring.boot.rsocket.RSocketService;
+import org.jetbrains.annotations.NotNull;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.core.annotation.AnnotationUtils;
@@ -13,21 +14,20 @@ import org.springframework.core.annotation.AnnotationUtils;
  * @author leijuan
  */
 public class RSocketServiceAnnotationProcessor extends LocalReactiveServiceCallerImpl implements BeanPostProcessor {
+    private RSocketProperties rsocketProperties;
 
-    private RSocketProperties rSocketProperties;
-
-    public RSocketServiceAnnotationProcessor(RSocketProperties rSocketProperties) {
-        this.rSocketProperties = rSocketProperties;
+    public RSocketServiceAnnotationProcessor(RSocketProperties rsocketProperties) {
+        this.rsocketProperties = rsocketProperties;
     }
 
     @Override
-    public Object postProcessBeforeInitialization(Object bean, String beanName) throws BeansException {
+    public Object postProcessBeforeInitialization(@NotNull Object bean, String beanName) throws BeansException {
         scanRSocketServiceAnnotation(bean, beanName);
         return bean;
     }
 
     @Override
-    public Object postProcessAfterInitialization(Object bean, String beanName) throws BeansException {
+    public Object postProcessAfterInitialization(@NotNull Object bean, String beanName) throws BeansException {
         return bean;
     }
 
@@ -39,14 +39,14 @@ public class RSocketServiceAnnotationProcessor extends LocalReactiveServiceCalle
         }
     }
 
-    private void registerRSocketService(RSocketService rSocketService, Object bean) {
-        String serviceName = rSocketService.name();
-        if (serviceName.isEmpty()) {
-            serviceName = rSocketService.serviceInterface().getCanonicalName();
+    private void registerRSocketService(RSocketService rsocketServiceAnnotation, Object bean) {
+        String serviceName = rsocketServiceAnnotation.serviceInterface().getCanonicalName();
+        if (!rsocketServiceAnnotation.name().isEmpty()) {
+            serviceName = rsocketServiceAnnotation.name();
         }
-        String group = rSocketProperties.getGroup();
-        String version = rSocketService.version().isEmpty() ? rSocketProperties.getVersion() : rSocketService.version();
-        addProvider(group, serviceName, version, rSocketService.serviceInterface(), bean);
+        String group = rsocketProperties.getGroup();
+        String version = rsocketServiceAnnotation.version().isEmpty() ? rsocketProperties.getVersion() : rsocketServiceAnnotation.version();
+        addProvider(group, serviceName, version, rsocketServiceAnnotation.serviceInterface(), bean);
     }
 
 

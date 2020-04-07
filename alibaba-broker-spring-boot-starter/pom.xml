@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.alibaba.rsocket</groupId>
         <artifactId>alibaba-rsocket-broker-parent</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>alibaba-broker-spring-boot-starter</artifactId>
@@ -14,8 +14,8 @@
     <description>Alibaba RSocket Broker Spring Boot Starter for extension</description>
 
     <properties>
-        <scalecube-cluster.version>2.4.10-RC1</scalecube-cluster.version>
-        <java-jwt.version>3.8.3</java-jwt.version>
+        <scalecube-cluster.version>2.4.10</scalecube-cluster.version>
+        <java-jwt.version>3.10.2</java-jwt.version>
     </properties>
 
     <dependencies>
@@ -38,15 +38,25 @@
             <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
-            <version>${guava.version}</version>
+            <groupId>org.eclipse.collections</groupId>
+            <artifactId>eclipse-collections-api</artifactId>
+            <version>${eclipse-collections.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.collections</groupId>
+            <artifactId>eclipse-collections</artifactId>
+            <version>${eclipse-collections.version}</version>
         </dependency>
         <!--security-->
         <dependency>
             <groupId>com.auth0</groupId>
             <artifactId>java-jwt</artifactId>
             <version>${java-jwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>2.8.1</version>
         </dependency>
         <dependency>
             <groupId>io.scalecube</groupId>

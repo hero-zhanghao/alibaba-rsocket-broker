@@ -2,12 +2,14 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
     <modelVersion>4.0.0</modelVersion>
+    <prerequisites>
+        <maven>3.5.0</maven>
+    </prerequisites>
+
     <groupId>com.alibaba.rsocket</groupId>
     <artifactId>alibaba-rsocket-broker-parent</artifactId>
     <packaging>pom</packaging>
-    <version>0.1.0-SNAPSHOT</version>
-    <name>Alibaba RSocket Broker Parent</name>
-    <description>Alibaba RSocket Broker Maven parent module</description>
+    <version>1.0.0-SNAPSHOT</version>
 
     <modules>
         <module>alibaba-rsocket-core</module>
@@ -17,32 +19,42 @@
         <module>alibaba-broker-registry-client-spring-boot-starter</module>
         <module>alibaba-broker-config-client-spring-boot-starter</module>
         <module>alibaba-broker-http-gateway</module>
+        <module>alibaba-broker-grpc-gateway</module>
         <module>example</module>
+        <module>alibaba-rsocket-service-common</module>
     </modules>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.version>1.8</java.version>
-        <spring-boot.version>2.2.2.RELEASE</spring-boot.version>
-        <micrometer.version>1.3.2</micrometer.version>
-        <reactor-bom.version>Dysprosium-SR2</reactor-bom.version>
-        <netty.version>4.1.44.Final</netty.version>
-        <rsocket.version>1.0.0-RC5</rsocket.version>
-        <kotlin.version>1.3.61</kotlin.version>
-        <rxjava2.version>2.2.16</rxjava2.version>
-        <caffeine.version>2.8.0</caffeine.version>
-        <roaring-bitmap.version>0.8.12</roaring-bitmap.version>
-        <protobuf-java.version>3.11.1</protobuf-java.version>
+        <spring-boot.version>2.2.6.RELEASE</spring-boot.version>
+        <bytebuddy.version>1.10.9</bytebuddy.version>
+        <micrometer.version>1.4.1</micrometer.version>
+        <reactor-bom.version>Dysprosium-SR6</reactor-bom.version>
+        <netty.version>4.1.48.Final</netty.version>
+        <rsocket.version>1.0.0-RC6</rsocket.version>
+        <kotlin.version>1.3.71</kotlin.version>
+        <rxjava2.version>2.2.19</rxjava2.version>
+        <rxjava3.version>3.0.2</rxjava3.version>
+        <caffeine.version>2.8.1</caffeine.version>
+        <roaring-bitmap.version>0.8.13</roaring-bitmap.version>
+        <protobuf-java.version>3.11.4</protobuf-java.version>
         <hessian.version>4.0.63</hessian.version>
-        <jackson.version>2.10.1</jackson.version>
-        <protostuff.version>1.6.2</protostuff.version>
-        <avor.version>1.9.1</avor.version>
-        <guava.version>28.2-jre</guava.version>
-        <spring-cloud-release.version>Hoxton.SR1</spring-cloud-release.version>
-        <cloudevents.version>1.2.0</cloudevents.version>
-        <junit5.version>5.5.2</junit5.version>
+        <jackson.version>2.10.3</jackson.version>
+        <protostuff.version>1.7.1</protostuff.version>
+        <avro.version>1.9.2</avro.version>
+        <eclipse-collections.version>10.2.0</eclipse-collections.version>
+        <spring-cloud-release.version>Hoxton.SR3</spring-cloud-release.version>
+        <cloudevents.version>1.3.0</cloudevents.version>
+        <zipkin-brave.version>5.11.0</zipkin-brave.version>
+        <junit5.version>5.6.1</junit5.version>
+        <timestamp>${maven.build.timestamp}</timestamp>
     </properties>
 
+    <name>Alibaba RSocket Broker Parent</name>
+    <description>Alibaba RSocket Broker Maven parent module</description>
+    <url>https://github.com/alibaba/alibaba-rsocket-broker</url>
+    <inceptionYear>2020</inceptionYear>
     <licenses>
         <license>
             <name>Apache License</name>
@@ -50,6 +62,16 @@
             <distribution>repo</distribution>
         </license>
     </licenses>
+    <developers>
+        <developer>
+            <id>leijuan</id>
+            <name>雷卷</name>
+            <roles>
+                <role>Developer</role>
+            </roles>
+            <organization>Alibaba</organization>
+        </developer>
+    </developers>
 
     <scm>
         <connection>scm:git:git@github.com:alibaba/alibaba-rsocket-broker.git</connection>
@@ -58,21 +80,21 @@
         <tag>HEAD</tag>
     </scm>
 
-    <developers>
-        <developer>
-            <id>leijuan</id>
-            <name>雷卷</name>
-            <roles>
-                <role>Developer</role>
-            </roles>
-        </developer>
-    </developers>
+    <issueManagement>
+        <system>Github</system>
+        <url>https://github.com/alibaba/alibaba-rsocket-broker/issues</url>
+    </issueManagement>
+
+    <ciManagement>
+        <system>Travis</system>
+        <url>https://travis-ci.com/alibaba/alibaba-rsocket-broker</url>
+    </ciManagement>
 
     <dependencies>
         <dependency>
             <groupId>org.jetbrains</groupId>
             <artifactId>annotations</artifactId>
-            <version>18.0.0</version>
+            <version>19.0.0</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -87,13 +109,18 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <version>3.14.0</version>
+            <version>3.15.0</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>net.bytebuddy</groupId>
+                <artifactId>byte-buddy</artifactId>
+                <version>${bytebuddy.version}</version>
+            </dependency>
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-bom</artifactId>
@@ -104,7 +131,7 @@
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-tcnative-boringssl-static</artifactId>
-                <version>2.0.28.Final</version>
+                <version>2.0.30.Final</version>
             </dependency>
             <dependency>
                 <groupId>io.projectreactor</groupId>
@@ -142,6 +169,13 @@
                 <type>pom</type>
             </dependency>
             <dependency>
+                <groupId>io.zipkin.brave</groupId>
+                <artifactId>brave-bom</artifactId>
+                <version>${zipkin-brave.version}</version>
+                <scope>import</scope>
+                <type>pom</type>
+            </dependency>
+            <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
                 <version>${spring-boot.version}</version>
@@ -163,9 +197,22 @@
                 </configuration>
             </plugin>
             <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>2.22.2</version>
+                <configuration>
+                    <includes>
+                        <include>**/*Tests.java</include>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/Abstract*.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>pl.project13.maven</groupId>
                 <artifactId>git-commit-id-plugin</artifactId>
-                <version>3.0.1</version>
+                <version>4.0.0</version>
                 <executions>
                     <execution>
                         <goals>
@@ -179,7 +226,24 @@
                     <generateGitPropertiesFile>true</generateGitPropertiesFile>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>com.github.spotbugs</groupId>
+                <artifactId>spotbugs-maven-plugin</artifactId>
+                <version>3.1.12.2</version>
+                <dependencies>
+                    <!-- overwrite dependency on spotbugs if you want to specify the version of spotbugs -->
+                    <dependency>
+                        <groupId>com.github.spotbugs</groupId>
+                        <artifactId>spotbugs</artifactId>
+                        <version>4.0.1</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <failOnError>false</failOnError>
+                </configuration>
+            </plugin>
         </plugins>
+
         <pluginManagement>
             <plugins>
                 <plugin>
@@ -197,14 +261,14 @@
                 <plugin>
                     <groupId>com.google.cloud.tools</groupId>
                     <artifactId>jib-maven-plugin</artifactId>
-                    <version>1.8.0</version>
+                    <version>2.1.0</version>
                     <configuration>
                         <allowInsecureRegistries>true</allowInsecureRegistries>
                         <from>
                             <image>openjdk:8-jdk-slim</image>
                         </from>
                         <container>
-                            <useCurrentTimestamp>true</useCurrentTimestamp>
+                            <creationTime>USE_CURRENT_TIMESTAMP</creationTime>
                         </container>
                     </configuration>
                 </plugin>
@@ -212,14 +276,71 @@
         </pluginManagement>
     </build>
 
-    <repositories>
-        <repository>
-            <id>spring-milestones</id>
-            <name>Spring Milestones</name>
-            <url>https://repo.spring.io/libs-milestone</url>
-            <snapshots>
-                <enabled>false</enabled>
-            </snapshots>
-        </repository>
-    </repositories>
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.sonatype.plugins</groupId>
+                        <artifactId>nexus-staging-maven-plugin</artifactId>
+                        <version>1.6.8</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <serverId>ossrh</serverId>
+                            <nexusUrl>https://oss.sonatype.org/</nexusUrl>
+                            <autoReleaseAfterClose>true</autoReleaseAfterClose>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.2.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals>
+                                    <goal>jar-no-fork</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.1.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>1.6</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>

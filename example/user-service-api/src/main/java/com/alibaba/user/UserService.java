@@ -1,10 +1,12 @@
 package com.alibaba.user;
 
+import com.alibaba.rsocket.ServiceMapping;
+import com.alibaba.rsocket.util.ByteBufBuilder;
+import io.netty.buffer.ByteBuf;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import javax.cache.annotation.CacheResult;
-import java.util.Date;
 import java.util.List;
 
 /**
@@ -22,6 +24,17 @@ public interface UserService {
      * @return user
      */
     Mono<User> findById(Integer id);
+
+    default Mono<User> findByIdFromDefault(Integer id) {
+        return findById(id);
+    }
+
+    default Mono<User> findByIdOrNick(Integer id, String nick) {
+        ByteBuf buf = ByteBufBuilder.builder().value(id).value(nick).build();
+        return _findByIdOrNick(buf);
+    }
+
+    Mono<User> _findByIdOrNick(ByteBuf byteBuf);
 
     /**
      * find by email or phone
@@ -67,7 +80,7 @@ public interface UserService {
      *
      * @param name name
      */
-    void flush(String name);
+    Mono<Void> flush(String name);
 
     /**
      * request/stream to get people by type
@@ -83,6 +96,25 @@ public interface UserService {
      * @param point point
      * @return user
      */
-    Flux<User> recent(Flux<Date> point);
+    Flux<User> recent(Flux<Integer> userIdFlux);
+
+    /**
+     * channel but with Mono return
+     *
+     * @param feeds feeds
+     * @return feeds count
+     */
+    Mono<Integer> postFeeds(Flux<String> feeds);
+
+    Flux<User> recentWithType(String type, Flux<Integer> userIdFlux);
+
+    Mono<String> error(String text);
+
+    @ServiceMapping(resultEncoding = "application/octet-stream")
+    Mono<ByteBuf> findAvatar(Integer id);
+
+    @ServiceMapping(paramEncoding = "application/octet-stream", resultEncoding = "application/octet-stream")
+    Mono<ByteBuf> findUserByIdAndNick(ByteBuf byteBuf);
+
 
 }

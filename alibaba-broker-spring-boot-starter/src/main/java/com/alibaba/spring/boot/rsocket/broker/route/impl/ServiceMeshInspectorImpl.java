@@ -1,7 +1,5 @@
 package com.alibaba.spring.boot.rsocket.broker.route.impl;
 
-import com.alibaba.rsocket.ServiceLocator;
-import com.alibaba.rsocket.utils.MurmurHash3;
 import com.alibaba.spring.boot.rsocket.broker.route.ServiceMeshInspector;
 import com.alibaba.spring.boot.rsocket.broker.security.RSocketAppPrincipal;
 import org.roaringbitmap.RoaringBitmap;
@@ -16,16 +14,33 @@ public class ServiceMeshInspectorImpl implements ServiceMeshInspector {
      * white relation bitmap
      */
     private RoaringBitmap whiteRelationBitmap = new RoaringBitmap();
+    /**
+     * auth required
+     */
+    private boolean authRequired = true;
+
+    public ServiceMeshInspectorImpl() {
+
+    }
+
+    public ServiceMeshInspectorImpl(boolean authRequired) {
+        this.authRequired = authRequired;
+    }
+
+    public void setAuthRequired(boolean authRequired) {
+        this.authRequired = authRequired;
+    }
 
     @Override
     public boolean isRequestAllowed(RSocketAppPrincipal requesterPrincipal, String routing, RSocketAppPrincipal responderPrincipal) {
+        if (!authRequired) return true;
         //org & service account relation
-        int relationHashCode = MurmurHash3.hash32(requesterPrincipal.hashCode() + ":" + responderPrincipal.hashCode());
+        int relationHashCode = (requesterPrincipal.hashCode() + ":" + responderPrincipal.hashCode()).hashCode();
         if (whiteRelationBitmap.contains(relationHashCode)) {
             return true;
         }
         //acl mapping
-        int aclHashCode = MurmurHash3.hash32(requesterPrincipal.hashCode() + ":" + routing + ":" + responderPrincipal.hashCode());
+        int aclHashCode = (requesterPrincipal.hashCode() + ":" + routing + ":" + responderPrincipal.hashCode()).hashCode();
         if (whiteRelationBitmap.contains(aclHashCode)) {
             return true;
         }

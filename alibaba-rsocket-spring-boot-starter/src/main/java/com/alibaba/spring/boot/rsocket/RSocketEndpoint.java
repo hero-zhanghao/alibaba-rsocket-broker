@@ -1,8 +1,12 @@
 package com.alibaba.spring.boot.rsocket;
 
 import com.alibaba.rsocket.RSocketAppContext;
+import com.alibaba.rsocket.RSocketRequesterSupport;
+import com.alibaba.rsocket.ServiceLocator;
 import com.alibaba.rsocket.events.AppStatusEvent;
-import com.alibaba.rsocket.rpc.LocalReactiveServiceCaller;
+import com.alibaba.rsocket.health.RSocketServiceHealth;
+import com.alibaba.rsocket.invocation.RSocketRemoteServiceBuilder;
+import com.alibaba.rsocket.loadbalance.LoadBalancedRSocket;
 import com.alibaba.rsocket.upstream.UpstreamCluster;
 import com.alibaba.rsocket.upstream.UpstreamManager;
 import io.cloudevents.v1.CloudEventBuilder;
@@ -15,12 +19,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.net.URI;
-import java.time.Duration;
 import java.time.ZonedDateTime;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -31,27 +31,47 @@ import java.util.stream.Collectors;
 @Endpoint(id = "rsocket")
 public class RSocketEndpoint {
     private RSocketProperties properties;
-    private LocalReactiveServiceCaller localReactiveServiceCaller;
+    private RSocketRequesterSupport rsocketRequesterSupport;
     private UpstreamManager upstreamManager;
+    private Integer rsocketServiceStatus = AppStatusEvent.STATUS_SERVING;
+    private boolean serviceProvider = false;
 
-    public RSocketEndpoint(RSocketProperties properties, UpstreamManager upstreamManager, LocalReactiveServiceCaller localReactiveServiceCaller) {
+    public RSocketEndpoint(RSocketProperties properties, UpstreamManager upstreamManager, RSocketRequesterSupport rsocketRequesterSupport) {
         this.properties = properties;
         this.upstreamManager = upstreamManager;
+        this.rsocketRequesterSupport = rsocketRequesterSupport;
+        Set<ServiceLocator> exposedServices = rsocketRequesterSupport.exposedServices().get();
+        if (!exposedServices.isEmpty()) {
+            this.serviceProvider = true;
+        }
     }
 
     @ReadOperation
     public Map<String, Object> info() {
         Map<String, Object> info = new HashMap<>();
         info.put("id", RSocketAppContext.ID);
-        if (!localReactiveServiceCaller.findAllServices().isEmpty()) {
-            info.put("published", localReactiveServiceCaller.findAllServices());
+        info.put("serviceStatus", AppStatusEvent.statusText(this.rsocketServiceStatus));
+        if (this.serviceProvider) {
+            info.put("published", rsocketRequesterSupport.exposedServices().get());
+        }
+        if (!RSocketRemoteServiceBuilder.CONSUMED_SERVICES.isEmpty()) {
+            info.put("subscribed", RSocketRemoteServiceBuilder.CONSUMED_SERVICES.stream()
+                    .filter(serviceLocator -> !RSocketServiceHealth.class.getCanonicalName().equals(serviceLocator.getService()))
+                    .collect(Collectors.toList()));
         }
         Collection<UpstreamCluster> upstreamClusters = upstreamManager.findAllClusters();
         if (!upstreamClusters.isEmpty()) {
-            info.put("subscribed", upstreamClusters.stream().map(upstreamCluster -> {
+            info.put("upstreams", upstreamClusters.stream().map(upstreamCluster -> {
                 Map<String, Object> temp = new HashMap<>();
                 temp.put("service", upstreamCluster.getServiceId());
                 temp.put("uris", upstreamCluster.getUris());
+                LoadBalancedRSocket loadBalancedRSocket = upstreamCluster.getLoadBalancedRSocket();
+                temp.put("activeUris", loadBalancedRSocket.getActiveSockets().keySet());
+                if (!loadBalancedRSocket.getUnHealthyUriSet().isEmpty()) {
+                    temp.put("unHealthyUris", loadBalancedRSocket.getUnHealthyUriSet());
+                }
+                temp.put("lastRefreshTimeStamp", new Date(loadBalancedRSocket.getLastRefreshTimeStamp()));
+                temp.put("lastHealthCheckTimeStamp", new Date(loadBalancedRSocket.getLastHealthCheckTimeStamp()));
                 return temp;
             }).collect(Collectors.toList()));
         }
@@ -68,18 +88,25 @@ public class RSocketEndpoint {
     @WriteOperation
     public Mono<String> operate(@Selector String action) {
         if ("online".equalsIgnoreCase(action)) {
-            return sendAppStatus(AppStatusEvent.STATUS_SERVING).thenReturn("Succeed to online!");
+            this.rsocketServiceStatus = AppStatusEvent.STATUS_SERVING;
+            return sendAppStatus(this.rsocketServiceStatus).thenReturn("Succeed to register RSocket services on brokers!");
         } else if ("offline".equalsIgnoreCase(action)) {
-            return sendAppStatus(AppStatusEvent.STATUS_OUT_OF_SERVICE).thenReturn("Succeed to offline!");
+            this.rsocketServiceStatus = AppStatusEvent.STATUS_OUT_OF_SERVICE;
+            return sendAppStatus(this.rsocketServiceStatus).thenReturn("Succeed to unregister RSocket services on brokers!");
         } else if ("shutdown".equalsIgnoreCase(action)) {
-            return sendAppStatus(AppStatusEvent.STATUS_STOPPED)
-                    .delayElement(Duration.ofSeconds(15))
-                    .thenReturn("Succeed to shutdown!");
+            this.rsocketServiceStatus = AppStatusEvent.STATUS_STOPPED;
+            return sendAppStatus(this.rsocketServiceStatus)
+                    .thenReturn("Succeed to unregister RSocket services on brokers! Please wait almost 60 seconds to shutdown the Spring Boot App!");
+        } else if ("refreshUpstreams".equalsIgnoreCase(action)) {
+            Collection<UpstreamCluster> allClusters = this.upstreamManager.findAllClusters();
+            for (UpstreamCluster upstreamCluster : allClusters) {
+                upstreamCluster.getLoadBalancedRSocket().refreshUnHealthyUris();
+            }
+            return Mono.just("Begin to refresh unHealthy upstream clusters now!");
         } else {
             return Mono.just("Unknown action, please use online, offline and shutdown");
         }
     }
-
 
     public Mono<Void> sendAppStatus(Integer status) {
         final CloudEventImpl<AppStatusEvent> appStatusEventCloudEvent = CloudEventBuilder.<AppStatusEvent>builder()
@@ -90,8 +117,14 @@ public class RSocketEndpoint {
                 .withDataContentType("application/json")
                 .withData(new AppStatusEvent(RSocketAppContext.ID, status))
                 .build();
-        return Flux.fromIterable(upstreamManager.findAllClusters()).flatMap(upstreamCluster -> upstreamCluster.fireCloudEventToUpstreamAll(appStatusEventCloudEvent)).then();
+        return Flux.fromIterable(upstreamManager.findAllClusters()).flatMap(upstreamCluster -> upstreamCluster.getLoadBalancedRSocket().fireCloudEventToUpstreamAll(appStatusEventCloudEvent)).then();
     }
 
+    public Integer getRsocketServiceStatus() {
+        return rsocketServiceStatus;
+    }
 
+    public boolean isServiceProvider() {
+        return serviceProvider;
+    }
 }

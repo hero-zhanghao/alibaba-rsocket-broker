@@ -1,19 +1,21 @@
 package com.alibaba.spring.boot.rsocket.broker.route;
 
+import com.alibaba.rsocket.ServiceLocator;
 import org.jetbrains.annotations.Nullable;
-import reactor.core.publisher.Flux;
 
 import java.util.Collection;
 import java.util.Set;
 
 /**
- * service routing selector: find handler according service id
+ * service routing selector: find handler according to service id
  *
  * @author leijuan
  */
 public interface ServiceRoutingSelector {
 
-    void register(Integer instanceId, Set<String> services);
+    void register(Integer instanceId, Set<ServiceLocator> services);
+
+    void register(Integer instanceId, int powerUnit, Set<ServiceLocator> services);
 
     void deregister(Integer instanceId);
 
@@ -22,13 +24,18 @@ public interface ServiceRoutingSelector {
     boolean containService(Integer serviceId);
 
     @Nullable
+    ServiceLocator findServiceById(Integer serviceId);
+
+    @Nullable
     Integer findHandler(Integer serviceId);
 
-    Flux<Integer> findHandlers(Integer serviceId);
+    Collection<Integer> findHandlers(Integer serviceId);
 
     Integer getInstanceCount(Integer serviceId);
 
     Integer getInstanceCount(String serviceName);
 
-    Collection<String> findAllServices();
+    Collection<ServiceLocator> findAllServices();
+
+    int getDistinctServiceCount();
 }

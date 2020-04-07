@@ -3,13 +3,11 @@ package com.alibaba.spring.boot.rsocket.demo;
 import com.alibaba.user.User;
 import com.alibaba.user.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-
-import java.time.Duration;
-import java.util.Date;
-import java.util.List;
 
 /**
  * portal demo for test
@@ -21,19 +19,14 @@ public class PortalController {
     @Autowired
     UserService userService;
 
-    @RequestMapping("/users")
-    public Mono<List<User>> all() {
-        return userService.findAll();
+    @GetMapping("/error")
+    public Mono<String> error() {
+        return userService.error("Hi");
     }
 
-    @PostMapping("/user/save")
-    public Mono<Integer> save(@RequestBody User user) {
-        return userService.save(user);
-    }
-
-    @GetMapping("/user/{id}")
-    public Mono<User> user(@PathVariable Integer id) {
-        return userService.findById(id);
+    @GetMapping("/job1")
+    public Mono<Void> job1() {
+        return userService.job1();
     }
 
     @RequestMapping("/appName")
@@ -46,11 +39,21 @@ public class PortalController {
         return userService.findAllPeople("vip");
     }
 
-    @RequestMapping("/channel")
-    public Flux<User> channel() {
-        Flux<Date> dates = Flux.interval(Duration.ofMillis(1000))
-                .map(Date::new);
-        return userService.recent(dates);
+    @RequestMapping("/channel1")
+    public Flux<User> channel1() {
+        Flux<Integer> userIdFlux = Flux.range(1, 20);
+        return userService.recent(userIdFlux);
+    }
+
+    @RequestMapping("/channel2")
+    public Flux<User> channel2() {
+        Flux<Integer> userIdFlux = Flux.range(1, 20);
+        return userService.recentWithType("VIP", userIdFlux);
+    }
+
+    @RequestMapping("/monoChannel")
+    public Mono<Integer> monoChannel() {
+        return userService.postFeeds(Flux.just("one", "two", "three"));
     }
 
     @RequestMapping("/")

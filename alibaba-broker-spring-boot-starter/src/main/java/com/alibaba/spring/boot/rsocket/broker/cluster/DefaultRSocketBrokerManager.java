@@ -1,6 +1,10 @@
 package com.alibaba.spring.boot.rsocket.broker.cluster;
 
 import com.alibaba.rsocket.ServiceLocator;
+import com.alibaba.rsocket.transport.NetworkUtil;
+import io.cloudevents.v1.CloudEventImpl;
+import io.micrometer.core.instrument.Metrics;
+import org.eclipse.collections.api.block.function.primitive.DoubleFunction;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -9,7 +13,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.stream.Collectors;
 
-import static com.alibaba.rsocket.transport.NetworkUtil.getLocalIP;
 
 /**
  * Default RSocket Broker Manager
@@ -18,22 +21,32 @@ import static com.alibaba.rsocket.transport.NetworkUtil.getLocalIP;
  */
 public class DefaultRSocketBrokerManager implements RSocketBrokerManager {
     private Collection<String> hosts;
+    private RSocketBroker localBroker;
 
     public DefaultRSocketBrokerManager() {
         try {
-            this.hosts = Collections.singletonList(getLocalIP());
+            String localIP = NetworkUtil.LOCAL_IP;
+            this.localBroker = new RSocketBroker(localIP);
+            this.hosts = Collections.singletonList(localIP);
         } catch (Exception ignore) {
 
         }
     }
 
     public DefaultRSocketBrokerManager(String... hosts) {
+        this.localBroker = new RSocketBroker(NetworkUtil.LOCAL_IP);
         this.hosts = Arrays.asList(hosts);
+        Metrics.globalRegistry.gauge("cluster.broker.count", this, (DoubleFunction<DefaultRSocketBrokerManager>) brokerManagerGossip -> brokerManagerGossip.hosts.size());
     }
 
     @Override
     public Flux<Collection<RSocketBroker>> requestAll() {
         return Flux.just(hostsToBrokers());
+    }
+
+    @Override
+    public RSocketBroker localBroker() {
+        return this.localBroker;
     }
 
     @Override
@@ -61,6 +74,11 @@ public class DefaultRSocketBrokerManager implements RSocketBrokerManager {
 
     }
 
+    @Override
+    public Mono<String> broadcast(CloudEventImpl<?> cloudEvent) {
+        return Mono.empty();
+    }
+
     public Collection<RSocketBroker> hostsToBrokers() {
         return this.hosts.stream().map(host -> {
             RSocketBroker broker = new RSocketBroker();
@@ -68,5 +86,6 @@ public class DefaultRSocketBrokerManager implements RSocketBrokerManager {
             return broker;
         }).collect(Collectors.toList());
     }
+
 
 }

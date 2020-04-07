@@ -1,9 +1,9 @@
 package com.alibaba.rsocket.metadata;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-
-import java.nio.charset.StandardCharsets;
+import io.netty.buffer.PooledByteBufAllocator;
+import io.rsocket.metadata.security.AuthMetadataFlyweight;
+import io.rsocket.metadata.security.WellKnownAuthType;
 
 /**
  * bearer token metadata, please refer https://github.com/rsocket/rsocket/blob/master/Extensions/Security/Authentication.md
@@ -14,20 +14,20 @@ public class BearerTokenMetadata implements MetadataAware {
     /**
      * Bearer Token
      */
-    private String bearerToken;
+    private char[] bearerToken;
 
-    public String getBearerToken() {
+    public char[] getBearerToken() {
         return bearerToken;
     }
 
-    public void setBearerToken(String bearerToken) {
+    public void setBearerToken(char[] bearerToken) {
         this.bearerToken = bearerToken;
     }
 
     public BearerTokenMetadata() {
     }
 
-    public BearerTokenMetadata(String bearerToken) {
+    public BearerTokenMetadata(char[] bearerToken) {
         this.bearerToken = bearerToken;
     }
 
@@ -43,11 +43,7 @@ public class BearerTokenMetadata implements MetadataAware {
 
     @Override
     public ByteBuf getContent() {
-        byte[] credentialsBytes = bearerToken.getBytes();
-        ByteBuf byteBuf = Unpooled.buffer(1 + credentialsBytes.length);
-        byteBuf.writeByte(0x81); //bearer type
-        byteBuf.writeBytes(credentialsBytes);
-        return byteBuf;
+        return AuthMetadataFlyweight.encodeBearerMetadata(PooledByteBufAllocator.DEFAULT, bearerToken);
     }
 
     /**
@@ -56,7 +52,7 @@ public class BearerTokenMetadata implements MetadataAware {
      * @return data format
      */
     private String formatData() {
-        return bearerToken;
+        return new String(bearerToken);
     }
 
     @Override
@@ -71,22 +67,13 @@ public class BearerTokenMetadata implements MetadataAware {
      * @param byteBuf byte buffer
      */
     public void load(ByteBuf byteBuf) throws Exception {
-        //don't us regex because of performance
-        String text = byteBuf.slice(1, byteBuf.capacity() - 1).toString(StandardCharsets.US_ASCII);
-        load(text);
+        WellKnownAuthType wellKnownAuthType = AuthMetadataFlyweight.decodeWellKnownAuthType(byteBuf);
+        if (wellKnownAuthType == WellKnownAuthType.BEARER) {
+            this.bearerToken = AuthMetadataFlyweight.decodeBearerTokenAsCharArray(byteBuf);
+        }
     }
 
-    @Override
-    public String toText() throws Exception {
-        return formatData();
-    }
-
-    @Override
-    public void load(String text) throws Exception {
-        this.bearerToken = text;
-    }
-
-    public static BearerTokenMetadata jwt(String credentials) {
+    public static BearerTokenMetadata jwt(char[] credentials) {
         return new BearerTokenMetadata(credentials);
     }
 

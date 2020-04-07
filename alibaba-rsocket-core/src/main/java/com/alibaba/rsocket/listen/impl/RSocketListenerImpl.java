@@ -1,6 +1,5 @@
 package com.alibaba.rsocket.listen.impl;
 
-import com.alibaba.rsocket.listen.CompositeMetadataInterceptor;
 import com.alibaba.rsocket.listen.RSocketListener;
 import com.alibaba.rsocket.observability.RsocketErrorCode;
 import io.netty.handler.ssl.OpenSsl;
@@ -26,6 +25,7 @@ import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.*;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -37,7 +37,8 @@ public class RSocketListenerImpl implements RSocketListener {
     private Logger log = LoggerFactory.getLogger(RSocketListenerImpl.class);
     private Map<Integer, String> schemas = new HashMap<>();
     private String host = "0.0.0.0";
-    public static String[] protocols = new String[]{"TLSv1.3", "TLSv.1.2"};
+    public static final String[] protocols = new String[]{"TLSv1.3", "TLSv.1.2"};
+    private Consumer<Throwable> errorConsumer;
     private Certificate certificate;
     private PrivateKey privateKey;
     private PayloadDecoder payloadDecoder;
@@ -48,8 +49,16 @@ public class RSocketListenerImpl implements RSocketListener {
     private Integer status = -1;
     private List<Disposable> responders = new ArrayList<>();
 
+    public void host(String host) {
+        this.host = host;
+    }
+
     public void listen(String schema, int port) {
         this.schemas.put(port, schema);
+    }
+
+    public void errorConsumer(Consumer<Throwable> errorConsumer) {
+        this.errorConsumer = errorConsumer;
     }
 
     public void setCertificate(Certificate certificate) {
@@ -137,11 +146,17 @@ public class RSocketListenerImpl implements RSocketListener {
                 for (DuplexConnectionInterceptor connectionInterceptor : connectionInterceptors) {
                     serverRSocketFactory = serverRSocketFactory.addConnectionPlugin(connectionInterceptor);
                 }
-                //add composite metadata parsing interceptor
-                serverRSocketFactory = serverRSocketFactory.addResponderPlugin(CompositeMetadataInterceptor.getInstance());
                 //responder interceptor
                 for (RSocketInterceptor responderInterceptor : responderInterceptors) {
                     serverRSocketFactory = serverRSocketFactory.addResponderPlugin(responderInterceptor);
+                }
+                //error consumer
+                if (this.errorConsumer != null) {
+                    serverRSocketFactory = serverRSocketFactory.errorConsumer(errorConsumer);
+                } else {
+                    serverRSocketFactory = serverRSocketFactory.errorConsumer(error -> {
+                        log.error(RsocketErrorCode.message("RST-100500", error.getMessage()), error);
+                    });
                 }
                 Disposable disposable = serverRSocketFactory
                         .acceptor(acceptor)

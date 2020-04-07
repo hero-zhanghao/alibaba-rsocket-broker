@@ -28,9 +28,9 @@ public interface ObjectEncodingHandler {
      *
      * @param args arguments
      * @return byte buffer
-     * @throws Exception exception
+     * @throws EncodingException encoding exception
      */
-    ByteBuf encodingParams(@Nullable Object[] args) throws Exception;
+    ByteBuf encodingParams(@Nullable Object[] args) throws EncodingException;
 
     /**
      * decode params, the return value maybe array or single object value
@@ -38,19 +38,20 @@ public interface ObjectEncodingHandler {
      * @param data          data
      * @param targetClasses target classes
      * @return object array or single object value
-     * @throws Exception exception
+     * @throws EncodingException exception
      */
     @Nullable
-    Object decodeParams(ByteBuf data, @Nullable Class<?>... targetClasses) throws Exception;
+    Object decodeParams(ByteBuf data, @Nullable Class<?>... targetClasses) throws EncodingException;
 
     /**
      * encode result
      *
      * @param result result
      * @return byte buffer
-     * @throws Exception exception
+     * @throws EncodingException exception
      */
-    ByteBuf encodingResult(@Nullable Object result) throws Exception;
+    @NotNull
+    ByteBuf encodingResult(@Nullable Object result) throws EncodingException;
 
     /**
      * decode result
@@ -58,9 +59,13 @@ public interface ObjectEncodingHandler {
      * @param data        data
      * @param targetClass target class
      * @return result object
-     * @throws Exception exception
+     * @throws EncodingException exception
      */
     @Nullable
-    Object decodeResult(ByteBuf data, @Nullable Class<?> targetClass) throws Exception;
+    Object decodeResult(ByteBuf data, @Nullable Class<?> targetClass) throws EncodingException;
 
+
+    default boolean isArrayEmpty(Object[] args) {
+        return args == null || args.length == 0 || (args.length == 1 && args[0] == null);
+    }
 }

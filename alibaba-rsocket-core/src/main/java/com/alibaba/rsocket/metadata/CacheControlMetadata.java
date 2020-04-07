@@ -1,7 +1,7 @@
 package com.alibaba.rsocket.metadata;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.PooledByteBufAllocator;
 
 /**
  * cache control metadata
@@ -34,12 +34,9 @@ public class CacheControlMetadata implements MetadataAware {
 
     @Override
     public ByteBuf getContent() {
-        return Unpooled.copyLong(expiredAt);
-    }
-
-    @Override
-    public String toString() {
-        return String.valueOf(expiredAt);
+        ByteBuf byteBuf = PooledByteBufAllocator.DEFAULT.buffer(8, 8);
+        byteBuf.writeLong(expiredAt);
+        return byteBuf;
     }
 
     /**
@@ -49,16 +46,6 @@ public class CacheControlMetadata implements MetadataAware {
      */
     public void load(ByteBuf byteBuf) {
         this.expiredAt = byteBuf.readLong();
-    }
-
-    @Override
-    public String toText() throws Exception {
-        return toString();
-    }
-
-    @Override
-    public void load(String text) throws Exception {
-        this.expiredAt = Long.valueOf(text);
     }
 
     public static CacheControlMetadata from(ByteBuf content) {

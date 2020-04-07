@@ -41,9 +41,9 @@ public class AppStatusCloudEventProcessor {
     public void init() {
         eventProcessor.subscribe(cloudEvent -> {
             String type = cloudEvent.getAttributes().getType();
-            if ("com.alibaba.rsocket.events.AppStatusEvent".equalsIgnoreCase(type)) {
+            if (AppStatusEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
                 handleAppStatusEvent(cloudEvent);
-            } else if ("com.alibaba.rsocket.events.ServicesExposedEvent".equalsIgnoreCase(type)) {
+            } else if (ServicesExposedEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
                 handleServicesExposedEvent(cloudEvent);
             }
         });
@@ -59,15 +59,12 @@ public class AppStatusCloudEventProcessor {
                 if (appStatusEvent.getStatus().equals(AppStatusEvent.STATUS_CONNECTED)) {  //app connected
                     registerConfigPush(appMetadata);
                 } else if (appStatusEvent.getStatus().equals(AppStatusEvent.STATUS_SERVING)) {  //app serving
-                    responderHandler.setAppStatus(AppStatusEvent.STATUS_SERVING);
-                    //if peer services not empty, register services again
-                    if (responderHandler.getPeerServices() != null) {
-                        responderHandler.registerPublishedServices();
-                    }
+                    responderHandler.registerPublishedServices();
                 } else if (appStatusEvent.getStatus().equals(AppStatusEvent.STATUS_OUT_OF_SERVICE)) { //app out of service
                     responderHandler.unRegisterPublishedServices();
-                } else {  //app stopped
-
+                } else if (appStatusEvent.getStatus().equals(AppStatusEvent.STATUS_STOPPED)) {
+                    responderHandler.unRegisterPublishedServices();
+                    responderHandler.setAppStatus(AppStatusEvent.STATUS_STOPPED);
                 }
             }
         }
@@ -95,7 +92,7 @@ public class AppStatusCloudEventProcessor {
         if (servicesExposedEvent != null && servicesExposedEvent.getAppId().equals(cloudEvent.getAttributes().getSource().getHost())) {
             RSocketBrokerResponderHandler responderHandler = rsocketBrokerHandlerRegistry.findByUUID(servicesExposedEvent.getAppId());
             if (responderHandler != null) {
-                responderHandler.setPeerServices(servicesExposedEvent.getPublished());
+                responderHandler.setPeerServices(servicesExposedEvent.getServices());
                 responderHandler.registerPublishedServices();
             }
         }

@@ -3,7 +3,6 @@ package com.alibaba.spring.boot.rsocket;
 import com.alibaba.rsocket.ServiceLocator;
 import com.alibaba.rsocket.events.CloudEventSupport;
 import com.alibaba.rsocket.events.InvalidCacheEvent;
-import com.alibaba.rsocket.invocation.RSocketRequesterRpcProxy;
 import com.alibaba.rsocket.observability.RsocketErrorCode;
 import com.alibaba.rsocket.upstream.UpstreamCluster;
 import com.alibaba.rsocket.upstream.UpstreamClusterChangedEvent;
@@ -25,7 +24,7 @@ import java.util.List;
  * @author leijuan
  */
 public class RequesterCloudEventProcessor {
-    private Logger log = LoggerFactory.getLogger(RequesterCloudEventProcessor.class);
+    private static final Logger log = LoggerFactory.getLogger(RequesterCloudEventProcessor.class);
     @Autowired
     private UpstreamManager upstreamManager;
     @Autowired(required = false)
@@ -37,10 +36,12 @@ public class RequesterCloudEventProcessor {
     public void init() {
         eventProcessor.subscribe(cloudEvent -> {
             String type = cloudEvent.getAttributes().getType();
-            if ("com.alibaba.rsocket.upstream.UpstreamClusterChangedEvent".equalsIgnoreCase(type)) {
+            if (UpstreamClusterChangedEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
                 handleUpstreamClusterChangedEvent(cloudEvent);
-            } else if ("com.alibaba.rsocket.events.InvalidCacheEvent".equalsIgnoreCase(type)) {
+            } else if (InvalidCacheEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
                 handleInvalidCache(cloudEvent);
+            } else {
+                log.info(RsocketErrorCode.message("RST-610501", type));
             }
         });
     }
@@ -58,30 +59,26 @@ public class RequesterCloudEventProcessor {
     }
 
     public void handleInvalidCache(CloudEventImpl<?> cloudEvent) {
+        if (cacheManager == null) return;
         InvalidCacheEvent invalidCacheEvent = CloudEventSupport.unwrapData(cloudEvent, InvalidCacheEvent.class);
         if (invalidCacheEvent != null) {
-            for (String key : invalidCacheEvent.getKeys()) {
-                RSocketRequesterRpcProxy.invalidateCache(key);
-                //Todo invalid spring cache with JSR 107 enable
-            }
             invalidateSpringCache(invalidCacheEvent.getKeys());
         }
     }
 
     private void invalidateSpringCache(List<String> keys) {
-        if (cacheManager != null) {
-            keys.forEach(key -> {
-                String[] parts = key.split(":", 2);
-                try {
-                    Cache cache = cacheManager.getCache(parts[0]);
-                    if (cache != null) {
-                        cache.evict(Integer.valueOf(parts[1]));
-                    }
-                } catch (Exception ignore) {
-
+        if (cacheManager == null) return;
+        keys.forEach(key -> {
+            String[] parts = key.split(":", 2);
+            try {
+                Cache cache = cacheManager.getCache(parts[0]);
+                if (cache != null) {
+                    cache.evict(parts[1]);
                 }
-            });
-        }
+            } catch (Exception ignore) {
+
+            }
+        });
     }
 
 }

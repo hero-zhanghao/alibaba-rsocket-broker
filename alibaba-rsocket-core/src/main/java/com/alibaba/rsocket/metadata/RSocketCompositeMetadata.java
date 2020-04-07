@@ -1,17 +1,14 @@
 package com.alibaba.rsocket.metadata;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.CompositeByteBuf;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.rsocket.metadata.CompositeMetadata;
 import io.rsocket.metadata.CompositeMetadataFlyweight;
 import io.rsocket.metadata.WellKnownMimeType;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import static io.rsocket.metadata.WellKnownMimeType.UNPARSEABLE_MIME_TYPE;
@@ -28,13 +25,23 @@ public class RSocketCompositeMetadata implements MetadataAware {
      */
     private GSVRoutingMetadata routingMetadata;
     /**
+     * binary routing data
+     */
+    private BinaryRoutingMetadata binaryRoutingMetadata;
+    /**
      * data encoding metadata, cached to avoid parse again
      */
     private MessageMimeTypeMetadata encodingMetadata;
+    /**
+     * accept mimetypes metadata
+     */
+    private MessageAcceptMimeTypesMetadata acceptMimeTypesMetadata;
+
+    private TracingMetadata tracingMetadata;
 
     public static RSocketCompositeMetadata from(ByteBuf content) {
         RSocketCompositeMetadata temp = new RSocketCompositeMetadata();
-        if (content.capacity() > 0) {
+        if (content.isReadable()) {
             temp.load(content);
         }
         return temp;
@@ -63,13 +70,13 @@ public class RSocketCompositeMetadata implements MetadataAware {
 
     @Override
     public ByteBuf getContent() {
-        CompositeByteBuf compositeByteBuf = Unpooled.compositeBuffer();
+        CompositeByteBuf compositeByteBuf = PooledByteBufAllocator.DEFAULT.compositeBuffer();
         for (Map.Entry<String, ByteBuf> entry : metadataStore.entrySet()) {
             WellKnownMimeType wellKnownMimeType = WellKnownMimeType.fromString(entry.getKey());
             if (wellKnownMimeType != UNPARSEABLE_MIME_TYPE) {
-                CompositeMetadataFlyweight.encodeAndAddMetadata(compositeByteBuf, ByteBufAllocator.DEFAULT, wellKnownMimeType, entry.getValue());
+                CompositeMetadataFlyweight.encodeAndAddMetadata(compositeByteBuf, PooledByteBufAllocator.DEFAULT, wellKnownMimeType, entry.getValue());
             } else {
-                CompositeMetadataFlyweight.encodeAndAddMetadata(compositeByteBuf, ByteBufAllocator.DEFAULT, entry.getKey(), entry.getValue());
+                CompositeMetadataFlyweight.encodeAndAddMetadata(compositeByteBuf, PooledByteBufAllocator.DEFAULT, entry.getKey(), entry.getValue());
             }
         }
         return compositeByteBuf;
@@ -98,6 +105,15 @@ public class RSocketCompositeMetadata implements MetadataAware {
     }
 
     @Nullable
+    public BinaryRoutingMetadata getBinaryRoutingMetadata() {
+        if (binaryRoutingMetadata == null && metadataStore.containsKey(RSocketMimeType.BinaryRouting.getType())) {
+            ByteBuf content = metadataStore.get(RSocketMimeType.BinaryRouting.getType());
+            this.binaryRoutingMetadata = BinaryRoutingMetadata.from(content);
+        }
+        return this.binaryRoutingMetadata;
+    }
+
+    @Nullable
     public GSVRoutingMetadata getRoutingMetaData() {
         if (this.routingMetadata == null && metadataStore.containsKey(RSocketMimeType.Routing.getType())) {
             this.routingMetadata = new GSVRoutingMetadata();
@@ -117,101 +133,24 @@ public class RSocketCompositeMetadata implements MetadataAware {
         return encodingMetadata;
     }
 
-    @Override
-    public String toText() throws Exception {
-        List<String> lines = new ArrayList<>();
-        for (Map.Entry<String, ByteBuf> entry : metadataStore.entrySet()) {
-            RSocketMimeType metadataType = RSocketMimeType.valueOfType(entry.getKey());
-            ByteBuf byteBuf = entry.getValue();
-            switch (metadataType) {
-                case Application: {
-                    AppMetadata metadata = new AppMetadata();
-                    metadata.load(byteBuf);
-                    lines.add(metadataType.getName() + ":" + metadata.toText());
-                    break;
-                }
-                case MessageMimeType: {
-                    MessageMimeTypeMetadata metadata = new MessageMimeTypeMetadata();
-                    metadata.load(byteBuf);
-                    lines.add(metadataType.getName() + ":" + metadata.toText());
-                    break;
-                }
-                case BearerToken: {
-                    BearerTokenMetadata metadata = new BearerTokenMetadata();
-                    metadata.load(byteBuf);
-                    lines.add(metadataType.getName() + ":" + metadata.toText());
-                    break;
-                }
-                case Routing: {
-                    GSVRoutingMetadata metadata = new GSVRoutingMetadata();
-                    metadata.load(byteBuf);
-                    lines.add(metadataType.getName() + ":" + metadata.toText());
-                    break;
-                }
-                case Tracing: {
-                    TracingMetadata metadata = new TracingMetadata();
-                    metadata.load(byteBuf);
-                    lines.add(metadataType.getName() + ":" + metadata.toText());
-                    break;
-                }
-                case CacheControl: {
-                    CacheControlMetadata metadata = new CacheControlMetadata();
-                    metadata.load(byteBuf);
-                    lines.add(metadataType.getName() + ":" + metadata.toText());
-                    break;
-                }
-            }
+    @Nullable
+    public MessageAcceptMimeTypesMetadata getAcceptMimeTypesMetadata() {
+        if (this.acceptMimeTypesMetadata == null && metadataStore.containsKey(RSocketMimeType.MessageAcceptMimeTypes.getType())) {
+            this.acceptMimeTypesMetadata = new MessageAcceptMimeTypesMetadata();
+            ByteBuf byteBuf = metadataStore.get(RSocketMimeType.MessageAcceptMimeTypes.getType());
+            this.acceptMimeTypesMetadata.load(byteBuf);
         }
-        return String.join("\r", lines);
+        return acceptMimeTypesMetadata;
     }
 
-    @Override
-    public void load(String text) throws Exception {
-        String[] lines = text.split("\r");
-        for (String line : lines) {
-            String[] parts = line.split("\\s*:\\s*", 2);
-            if (parts.length > 1) {
-                RSocketMimeType metadataType = RSocketMimeType.valueOfType(parts[0].trim());
-                switch (metadataType) {
-                    case Application: {
-                        AppMetadata metadata = new AppMetadata();
-                        metadata.load(parts[1].trim());
-                        addMetadata(metadata);
-                        break;
-                    }
-                    case MessageMimeType: {
-                        MessageMimeTypeMetadata metadata = new MessageMimeTypeMetadata();
-                        metadata.load(parts[1].trim());
-                        addMetadata(metadata);
-                        break;
-                    }
-                    case BearerToken: {
-                        BearerTokenMetadata metadata = new BearerTokenMetadata();
-                        metadata.load(parts[1].trim());
-                        addMetadata(metadata);
-                        break;
-                    }
-                    case Routing: {
-                        GSVRoutingMetadata metadata = new GSVRoutingMetadata();
-                        metadata.load(parts[1].trim());
-                        addMetadata(metadata);
-                        break;
-                    }
-                    case Tracing: {
-                        TracingMetadata metadata = new TracingMetadata();
-                        metadata.load(parts[1].trim());
-                        addMetadata(metadata);
-                        break;
-                    }
-                    case CacheControl: {
-                        CacheControlMetadata metadata = new CacheControlMetadata();
-                        metadata.load(parts[1].trim());
-                        addMetadata(metadata);
-                        break;
-                    }
-                }
-            }
+    @Nullable
+    public TracingMetadata getTracingMetadata() {
+        if (this.tracingMetadata == null && metadataStore.containsKey(RSocketMimeType.Tracing.getType())) {
+            this.tracingMetadata = new TracingMetadata();
+            ByteBuf byteBuf = metadataStore.get(RSocketMimeType.Tracing.getType());
+            this.tracingMetadata.load(byteBuf);
         }
+        return tracingMetadata;
     }
 
 }

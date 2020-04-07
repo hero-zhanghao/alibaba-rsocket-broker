@@ -1,32 +1,42 @@
 package com.alibaba.rsocket.invocation;
 
-
 import com.alibaba.rsocket.MutableContext;
 import com.alibaba.rsocket.encoding.RSocketEncodingFacade;
-import com.alibaba.rsocket.metadata.*;
+import com.alibaba.rsocket.metadata.MessageMimeTypeMetadata;
+import com.alibaba.rsocket.metadata.RSocketCompositeMetadata;
+import com.alibaba.rsocket.metadata.RSocketMimeType;
+import com.alibaba.rsocket.observability.RsocketErrorCode;
 import com.alibaba.rsocket.upstream.UpstreamCluster;
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
 import io.micrometer.core.instrument.Metrics;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.util.ReferenceCountUtil;
-import io.reactivex.Flowable;
-import io.reactivex.Maybe;
-import io.reactivex.Single;
 import io.rsocket.Payload;
-import io.rsocket.util.DefaultPayload;
-import reactor.adapter.rxjava.RxJava2Adapter;
+import io.rsocket.RSocket;
+import io.rsocket.frame.FrameType;
+import io.rsocket.util.ByteBufPayload;
+import net.bytebuddy.implementation.bind.annotation.AllArguments;
+import net.bytebuddy.implementation.bind.annotation.Origin;
+import net.bytebuddy.implementation.bind.annotation.RuntimeType;
+import net.bytebuddy.implementation.bind.annotation.This;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import javax.cache.annotation.CacheResult;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.time.Duration;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 
 /**
@@ -35,54 +45,59 @@ import java.util.concurrent.TimeUnit;
  * @author leijuan
  */
 public class RSocketRequesterRpcProxy implements InvocationHandler {
-    private UpstreamCluster upstream;
+    private static Logger log = LoggerFactory.getLogger(RSocketRequesterRpcProxy.class);
+    protected RSocket rsocket;
     /**
      * service interface
      */
-    private Class<?> serviceInterface;
+    protected Class<?> serviceInterface;
     /**
-     * cached methods
+     * group, such as data center name, region name or virtual cluster name
      */
-    private Map<Method, CacheResult> cachedMethods = new HashMap<>();
-    /**
-     * group, such as datacenter name, region name
-     */
-    private String group;
+    protected String group;
     /**
      * service name
      */
-    private String service;
+    protected String service;
     /**
      * service version
      */
-    private String version;
+    protected String version;
+    /**
+     * endpoint of service
+     */
+    protected String endpoint;
     /**
      * encoding type
      */
-    private RSocketMimeType encodingType;
+    protected RSocketMimeType encodingType;
+    /**
+     * accept encoding types
+     */
+    protected RSocketMimeType[] acceptEncodingTypes;
     /**
      * '
      * timeout for request/response
      */
-    private Duration timeout;
+    protected Duration timeout;
     /**
      * encoding facade
      */
-    private RSocketEncodingFacade encodingFacade = RSocketEncodingFacade.getInstance();
-
-    public static Cache<String, Mono<Object>> rpcCache = Caffeine.newBuilder()
-            .maximumSize(500_000)
-            .expireAfterWrite(5, TimeUnit.MINUTES)
-            .build();
+    protected RSocketEncodingFacade encodingFacade = RSocketEncodingFacade.getInstance();
     /**
      * java method metadata map cache for performance
      */
-    private Map<Method, ReactiveMethodMetadata> methodMetadataMap = new ConcurrentHashMap<>();
+    protected Map<Method, ReactiveMethodMetadata> methodMetadataMap = new ConcurrentHashMap<>();
+    /**
+     * interface default method handlers
+     */
+    protected Map<Method, MethodHandle> defaultMethodHandles = new HashMap<>();
 
     public RSocketRequesterRpcProxy(UpstreamCluster upstream,
-                                    String group, Class<?> serviceInterface, String service, String version,
-                                    RSocketMimeType encodingType, Duration timeout) {
-        this.upstream = upstream;
+                                    String group, Class<?> serviceInterface, @Nullable String service, String version,
+                                    RSocketMimeType encodingType, @Nullable RSocketMimeType acceptEncodingType,
+                                    Duration timeout, @Nullable String endpoint) {
+        this.rsocket = upstream.getLoadBalancedRSocket();
         this.serviceInterface = serviceInterface;
         this.service = serviceInterface.getCanonicalName();
         if (service != null && !service.isEmpty()) {
@@ -90,189 +105,167 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
         }
         this.group = group;
         this.version = version;
+        this.endpoint = endpoint;
         this.encodingType = encodingType;
-        this.timeout = timeout;
-        for (Method method : serviceInterface.getMethods()) {
-            if (method.getAnnotation(CacheResult.class) != null) {
-                cachedMethods.put(method, method.getAnnotation(CacheResult.class));
-            }
+        if (acceptEncodingType == null) {
+            this.acceptEncodingTypes = defaultAcceptEncodingTypes();
+        } else {
+            this.acceptEncodingTypes = new RSocketMimeType[]{acceptEncodingType};
         }
+        this.timeout = timeout;
     }
 
     @Override
-    public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+    @RuntimeType
+    public Object invoke(@This Object proxy, @Origin Method method, @AllArguments Object[] args) throws Throwable {
+        //interface default method validation for JDK Proxy only, not necessary for ByteBuddy
+        /*if (method.isDefault()) {
+            return getMethodHandle(method, serviceInterface).bindTo(proxy).invokeWithArguments(args);
+        }*/
         MutableContext mutableContext = new MutableContext();
-        //performance, cache method
         if (!methodMetadataMap.containsKey(method)) {
-            methodMetadataMap.put(method, new ReactiveMethodMetadata(method, encodingType));
+            methodMetadataMap.put(method, new ReactiveMethodMetadata(group, service, version,
+                    method, encodingType, this.acceptEncodingTypes, endpoint));
         }
         ReactiveMethodMetadata methodMetadata = methodMetadataMap.get(method);
-        //payload metadata
-        GSVRoutingMetadata routing = new GSVRoutingMetadata();
-        routing.setService(this.service);
-        routing.setMethod(methodMetadata.getName());
-        if (group != null) {
-            routing.setGroup(this.group);
-        }
-        if (version != null) {
-            routing.setVersion(this.version);
-        }
-        RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(routing);
-        //add param encoding & make hessian as result type
-        if (methodMetadata.getParamEncoding() != null) {
-            compositeMetadata.addMetadata(new MessageMimeTypeMetadata(methodMetadata.getParamEncoding()));
-            //todo add accepted mime types
-        }
-        //metadata data content
-        ByteBuf compositeMetadataBuf = compositeMetadata.getContent();
         //----- return type deal------
-        if (methodMetadata.isBiDirectional()) { //bi directional, channel
-            metrics(routing, "0x07");
+        if (methodMetadata.getRsocketFrameType() == FrameType.REQUEST_CHANNEL) {
+            metrics(methodMetadata);
             Payload routePayload;
             Flux<Object> source;
             //1 param or 2 params
             if (args.length == 1) {
-                routePayload = DefaultPayload.create(Unpooled.EMPTY_BUFFER, compositeMetadataBuf);
+                routePayload = ByteBufPayload.create(Unpooled.EMPTY_BUFFER, methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate());
                 source = (Flux<Object>) args[0];
             } else {
                 ByteBuf bodyBuffer = encodingFacade.encodingResult(args[0], methodMetadata.getParamEncoding());
-                routePayload = DefaultPayload.create(bodyBuffer, compositeMetadataBuf);
+                routePayload = ByteBufPayload.create(bodyBuffer, methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate());
                 source = (Flux<Object>) args[1];
             }
-            Flux<Payload> payloadFlux = Flux.just(routePayload).mergeWith(source.map(obj -> DefaultPayload.create(encodingFacade.encodingResult(obj, encodingType), compositeMetadataBuf)));
-            Flux<Payload> payloads = upstream.requestChannel(payloadFlux);
-            return payloads.flatMap(payload -> {
+            Flux<Payload> payloadFlux = source.startWith(routePayload).map(obj -> {
+                if (obj instanceof Payload) return (Payload) obj;
+                return ByteBufPayload.create(encodingFacade.encodingResult(obj, encodingType),
+                        methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate());
+            });
+            Flux<Payload> payloads = rsocket.requestChannel(payloadFlux);
+            Flux<Object> fluxReturn = payloads.concatMap(payload -> {
                 try {
-                    return Mono.justOrEmpty(encodingFacade.decodeResult(encodingType, payload.data(), methodMetadata.getInferredClassForResult()));
+                    RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(payload.metadata());
+                    return Mono.justOrEmpty(encodingFacade.decodeResult(extractPayloadDataMimeType(compositeMetadata, encodingType), payload.data(), methodMetadata.getInferredClassForReturn()));
                 } catch (Exception e) {
                     return Flux.error(e);
-                } finally {
-                    ReferenceCountUtil.safeRelease(payload);
                 }
             }).subscriberContext(mutableContext::putAll);
+            if (methodMetadata.isMonoChannel()) {
+                return fluxReturn.last();
+            } else {
+                return fluxReturn;
+            }
         } else {
             //body content
             ByteBuf bodyBuffer = encodingFacade.encodingParams(args, methodMetadata.getParamEncoding());
-            //return type is void, use fireAndForget
             Class<?> returnType = method.getReturnType();
-            if (returnType.equals(Void.TYPE)) {
-                metrics(routing, "0x05");
-                upstream.fireAndForget(DefaultPayload.create(bodyBuffer, compositeMetadataBuf)).subscribe();
-                return null;
-            }
-            //request/stream
-            else if (returnType.equals(Flux.class) || returnType.equals(Flowable.class)) {
-                metrics(routing, "0x05");
-                Flux<Payload> flux = upstream.requestStream(DefaultPayload.create(bodyBuffer, compositeMetadataBuf));
-                Flux<Object> result = flux.flatMap(payload -> {
+            if (methodMetadata.getRsocketFrameType() == FrameType.REQUEST_RESPONSE) {
+                metrics(methodMetadata);
+                Mono<Payload> payloadMono = remoteRequestResponse(methodMetadata, methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate(), bodyBuffer);
+                Mono<Object> result = payloadMono.handle((payload, sink) -> {
                     try {
-                        return Mono.justOrEmpty(encodingFacade.decodeResult(encodingType, payload.data(), methodMetadata.getInferredClassForResult()));
+                        RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(payload.metadata());
+                        Object obj = encodingFacade.decodeResult(extractPayloadDataMimeType(compositeMetadata, encodingType), payload.data(), methodMetadata.getInferredClassForReturn());
+                        if (obj != null) {
+                            sink.next(obj);
+                        }
+                        sink.complete();
                     } catch (Exception e) {
-                        return Mono.error(e);
-                    } finally {
-                        ReferenceCountUtil.safeRelease(payload);
+                        sink.error(e);
                     }
                 });
-                if (returnType.equals(Flowable.class)) {
-                    return RxJava2Adapter.fluxToFlowable(result);
-                }
-                return result.subscriberContext(mutableContext::putAll);
-            }
-            // request/response
-            else {
-                metrics(routing, "0x04");
-                if (cachedMethods.containsKey(method)) {
-                    CacheResult cacheResult = cachedMethods.get(method);
-                    String key = cacheResult.cacheName() + ":" + generateCacheKey(args);
-                    Mono<Object> cachedMono = rpcCache.getIfPresent(key);
-                    if (cachedMono != null) {
-                        return cachedMono;
-                    }
-                }
-                Mono<Payload> payloadMono = upstream.requestResponse(DefaultPayload.create(bodyBuffer, compositeMetadataBuf)).timeout(timeout);
-                Mono<Object> result = payloadMono.flatMap(payload -> {
+                return methodMetadata.getReactiveAdapter().fromPublisher(result, returnType, mutableContext);
+            } else if (methodMetadata.getRsocketFrameType() == FrameType.REQUEST_FNF) {
+                metrics(methodMetadata);
+                return remoteFireAndForget(methodMetadata, methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate(), bodyBuffer);
+            } else if (methodMetadata.getRsocketFrameType() == FrameType.REQUEST_STREAM) {
+                metrics(methodMetadata);
+                Flux<Payload> flux = remoteRequestStream(methodMetadata, methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate(), bodyBuffer);
+                Flux<Object> result = flux.concatMap((payload) -> {
                     try {
-                        Mono<Object> remoteResult = Mono.justOrEmpty(encodingFacade.decodeResult(encodingType, payload.data(), methodMetadata.getInferredClassForResult()));
-                        return injectContext(payload, remoteResult);
+                        RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(payload.metadata());
+                        return Mono.justOrEmpty(encodingFacade.decodeResult(extractPayloadDataMimeType(compositeMetadata, encodingType), payload.data(), methodMetadata.getInferredClassForReturn()));
                     } catch (Exception e) {
                         return Mono.error(e);
-                    } finally {
-                        ReferenceCountUtil.safeRelease(payload);
-                    }
-                }).doOnNext(obj -> {
-                    if (cachedMethods.containsKey(method)) {
-                        CacheResult cacheResult = cachedMethods.get(method);
-                        String key = cacheResult.cacheName() + ":" + generateCacheKey(args);
-                        rpcCache.put(key, Mono.just(obj).cache());
                     }
                 });
-                if (returnType.equals(Maybe.class)) {
-                    return RxJava2Adapter.monoToMaybe(result);
-                } else if (returnType.equals(Single.class)) {
-                    return RxJava2Adapter.monoToSingle(result);
+                return methodMetadata.getReactiveAdapter().fromPublisher(result, returnType, mutableContext);
+            } else {
+                ReferenceCountUtil.safeRelease(bodyBuffer);
+                return Mono.error(new Exception(RsocketErrorCode.message("RST-200405", methodMetadata.getRsocketFrameType())));
+            }
+        }
+    }
+
+    protected Flux<Payload> remoteRequestStream(ReactiveMethodMetadata methodMetadata, ByteBuf compositeMetadata, ByteBuf bodyBuf) {
+        return rsocket.requestStream(ByteBufPayload.create(bodyBuf, compositeMetadata));
+    }
+
+    protected Mono<Void> remoteFireAndForget(ReactiveMethodMetadata methodMetadata, ByteBuf compositeMetadata, ByteBuf bodyBuf) {
+        return rsocket.fireAndForget(ByteBufPayload.create(bodyBuf, compositeMetadata));
+    }
+
+    @NotNull
+    protected Mono<Payload> remoteRequestResponse(ReactiveMethodMetadata methodMetadata, ByteBuf compositeMetadata, ByteBuf bodyBuf) {
+        return rsocket.requestResponse(ByteBufPayload.create(bodyBuf, compositeMetadata))
+                .name(methodMetadata.getFullName())
+                .metrics()
+                .timeout(timeout)
+                .doOnError(TimeoutException.class, e -> {
+                    timeOutMetrics(methodMetadata);
+                    log.error(RsocketErrorCode.message("RST-200503", methodMetadata.getFullName(), timeout));
+                });
+    }
+
+    protected void metrics(ReactiveMethodMetadata methodMetadata) {
+        Metrics.counter(this.service, methodMetadata.getMetricsTags());
+    }
+
+    protected void timeOutMetrics(ReactiveMethodMetadata methodMetadata) {
+        Metrics.counter("rsocket.timeout.error", methodMetadata.getMetricsTags());
+    }
+
+    private RSocketMimeType extractPayloadDataMimeType(RSocketCompositeMetadata compositeMetadata, RSocketMimeType defaultEncodingType) {
+        if (compositeMetadata.contains(RSocketMimeType.MessageMimeType)) {
+            MessageMimeTypeMetadata mimeTypeMetadata = MessageMimeTypeMetadata.from(compositeMetadata.getMetadata(RSocketMimeType.MessageMimeType));
+            return mimeTypeMetadata.getRSocketMimeType();
+        }
+        return defaultEncodingType;
+    }
+
+    @Deprecated
+    public MethodHandle getMethodHandle(Method method, Class<?> serviceInterface) throws Exception {
+        MethodHandle methodHandle = this.defaultMethodHandles.get(method);
+        if (methodHandle == null) {
+            String version = System.getProperty("java.version");
+            if (version.startsWith("1.8.")) {
+                Constructor<MethodHandles.Lookup> lookupConstructor = MethodHandles.Lookup.class.getDeclaredConstructor(Class.class, Integer.TYPE);
+                if (!lookupConstructor.isAccessible()) {
+                    lookupConstructor.setAccessible(true);
                 }
-                return result.subscriberContext(mutableContext::putAll);
+                methodHandle = lookupConstructor.newInstance(method.getDeclaringClass(), MethodHandles.Lookup.PRIVATE)
+                        .unreflectSpecial(method, method.getDeclaringClass());
+            } else {
+                methodHandle = MethodHandles.lookup().findSpecial(
+                        method.getDeclaringClass(),
+                        method.getName(),
+                        MethodType.methodType(method.getReturnType(), method.getParameterTypes()),
+                        serviceInterface);
             }
+            this.defaultMethodHandles.put(method, methodHandle);
         }
+        return methodHandle;
     }
 
-    @SuppressWarnings("Duplicates")
-    protected void metrics(GSVRoutingMetadata routing, String frameType) {
-        List<String> tags = new ArrayList<>();
-        if (routing.getGroup() != null && !routing.getGroup().isEmpty()) {
-            tags.add("group");
-            tags.add(routing.getGroup());
-        }
-        if (routing.getVersion() != null && !routing.getVersion().isEmpty()) {
-            tags.add("version");
-            tags.add(routing.getVersion());
-        }
-        tags.add("method");
-        tags.add(routing.getMethod());
-        tags.add("frame");
-        tags.add(frameType);
-        Metrics.counter(routing.getService(), tags.toArray(new String[0])).increment();
-    }
-
-    /**
-     * Invalidate RPC cache
-     *
-     * @param key cache key
-     */
-    public static void invalidateCache(String key) {
-        rpcCache.invalidate(key);
-    }
-
-    /**
-     * Generate cache key, compatible with Spring SimpleKeyGenerator
-     *
-     * @param params params
-     * @return hashcode
-     */
-    public static Integer generateCacheKey(Object... params) {
-        if (params == null || params.length == 0) {
-            return 0;
-        } else if (params.length == 1) {
-            Object param = params[0];
-            if (param != null && !param.getClass().isArray()) {
-                return param.hashCode();
-            }
-        }
-        return Arrays.deepHashCode(params);
-    }
-
-    Mono<Object> injectContext(Payload payload, Mono<Object> origin) throws Exception {
-        Mono<Object> temp = origin;
-        ByteBuf metadata = payload.metadata();
-        if (metadata.capacity() > 0) {
-            RSocketCompositeMetadata rSocketCompositeMetadata = RSocketCompositeMetadata.from(metadata);
-            //message tags
-            if (rSocketCompositeMetadata.contains(RSocketMimeType.MessageTags)) {
-                MessageTagsMetadata tagsMetadata = MessageTagsMetadata.from(rSocketCompositeMetadata.getMetadata(RSocketMimeType.MessageTags));
-                Map<String, String> tags = tagsMetadata.getTags();
-                temp = temp.subscriberContext(ctx -> ctx.put("_tags", tags));
-            }
-        }
-        return temp;
+    public RSocketMimeType[] defaultAcceptEncodingTypes() {
+        return new RSocketMimeType[]{RSocketMimeType.Hessian, RSocketMimeType.Java_Object,
+                RSocketMimeType.Json, RSocketMimeType.Protobuf, RSocketMimeType.Avor, RSocketMimeType.CBOR,
+                RSocketMimeType.Text, RSocketMimeType.Binary};
     }
 }

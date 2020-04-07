@@ -1,5 +1,6 @@
 package com.alibaba.spring.boot.rsocket.observability;
 
+import com.alibaba.rsocket.RSocketService;
 import com.alibaba.rsocket.observability.MetricsService;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import reactor.core.publisher.Mono;
@@ -9,6 +10,7 @@ import reactor.core.publisher.Mono;
  *
  * @author leijuan
  */
+@RSocketService(serviceInterface = MetricsService.class)
 public class MetricsServicePrometheusImpl implements MetricsService {
     private PrometheusMeterRegistry meterRegistry;
 

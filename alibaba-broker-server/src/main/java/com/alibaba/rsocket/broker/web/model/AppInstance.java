@@ -1,12 +1,11 @@
 package com.alibaba.rsocket.broker.web.model;
 
 import com.alibaba.rsocket.ServiceLocator;
+import com.alibaba.rsocket.events.AppStatusEvent;
 import com.alibaba.rsocket.metadata.AppMetadata;
-import com.google.common.base.Joiner;
 
 import java.util.Date;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * App Instance
@@ -19,12 +18,13 @@ public class AppInstance {
     private String ip;
     private Date connectedAt;
     private Integer status;
+    private Integer powerRating = 1;
     private Set<ServiceLocator> services;
     private Set<String> consumedServices;
     private String orgs;
     private String serviceAccounts;
     private String roles;
-    private AppMetadata metadata;
+    private AppMetadata appMetadata;
 
     public String getId() {
         return id;
@@ -56,6 +56,18 @@ public class AppInstance {
 
     public void setStatus(Integer status) {
         this.status = status;
+    }
+
+    public String getStatusText() {
+        return AppStatusEvent.statusText(this.status);
+    }
+
+    public Integer getPowerRating() {
+        return powerRating;
+    }
+
+    public void setPowerRating(Integer powerRating) {
+        this.powerRating = powerRating;
     }
 
     public Set<ServiceLocator> getServices() {
@@ -106,26 +118,12 @@ public class AppInstance {
         this.roles = roles;
     }
 
-    public AppMetadata getMetadata() {
-        return metadata;
+    public AppMetadata getAppMetadata() {
+        return appMetadata;
     }
 
-    public void setMetadata(AppMetadata metadata) {
-        this.metadata = metadata;
-    }
-
-    public String getServicesHTML() {
-        if (services == null || services.isEmpty()) {
-            return "";
-        }
-        return services.stream().map(ServiceLocator::toString).collect(Collectors.joining("<br/>"));
-    }
-
-    public String getConsumedServicesHTML() {
-        if (consumedServices == null || consumedServices.isEmpty()) {
-            return "";
-        }
-        return Joiner.on("<br/>").join(consumedServices);
+    public void setAppMetadata(AppMetadata appMetadata) {
+        this.appMetadata = appMetadata;
     }
 
 }

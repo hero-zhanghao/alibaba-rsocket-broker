@@ -1,17 +1,22 @@
 package com.alibaba.rsocket.broker.web.ui;
 
 import com.alibaba.rsocket.broker.dns.DnsResolveService;
+import com.alibaba.rsocket.route.RSocketFilterChain;
 import com.alibaba.spring.boot.rsocket.broker.cluster.RSocketBrokerManager;
 import com.alibaba.spring.boot.rsocket.broker.responder.RSocketBrokerHandlerRegistry;
 import com.alibaba.spring.boot.rsocket.broker.route.ServiceRoutingSelector;
 import com.alibaba.spring.boot.rsocket.broker.security.AuthenticationService;
 import com.alibaba.spring.boot.rsocket.broker.services.ConfigurationService;
+import com.vaadin.flow.component.AttachEvent;
 import com.vaadin.flow.component.Component;
+import com.vaadin.flow.component.DetachEvent;
 import com.vaadin.flow.component.applayout.AppLayout;
 import com.vaadin.flow.component.applayout.DrawerToggle;
+import com.vaadin.flow.component.dependency.StyleSheet;
 import com.vaadin.flow.component.html.Image;
 import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.icon.Icon;
+import com.vaadin.flow.component.notification.Notification;
 import com.vaadin.flow.component.orderedlayout.HorizontalLayout;
 import com.vaadin.flow.component.page.Push;
 import com.vaadin.flow.component.page.Viewport;
@@ -21,7 +26,9 @@ import com.vaadin.flow.theme.Theme;
 import com.vaadin.flow.theme.lumo.Lumo;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
-import reactor.core.publisher.Flux;
+import org.springframework.beans.factory.annotation.Qualifier;
+import reactor.core.Disposable;
+import reactor.extra.processor.TopicProcessor;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -33,6 +40,7 @@ import static com.vaadin.flow.component.icon.VaadinIcon.*;
  *
  * @author leijuan
  */
+@StyleSheet("styles/styles.css")
 @Theme(Lumo.class)
 @Viewport("width=device-width, minimum-scale=1, initial-scale=1, user-scalable=yes, viewport-fit=cover")
 @Push
@@ -45,26 +53,33 @@ public class MainLayout extends AppLayout implements DisposableBean {
     private DnsResolveService resolveService;
     private ConfigurationService configurationService;
     private AuthenticationService authenticationService;
+    private RSocketFilterChain filterChain;
+    private TopicProcessor<String> notificationProcessor;
+    private Disposable notificationSubscribe = null;
 
     public MainLayout(@Autowired RSocketBrokerHandlerRegistry handlerRegistry,
                       @Autowired ServiceRoutingSelector serviceRoutingSelector,
                       @Autowired RSocketBrokerManager rSocketBrokerManager,
                       @Autowired DnsResolveService resolveService,
                       @Autowired ConfigurationService configurationService,
-                      @Autowired AuthenticationService authenticationService) {
+                      @Autowired AuthenticationService authenticationService,
+                      @Autowired RSocketFilterChain filterChain,
+                      @Autowired @Qualifier("notificationProcessor") TopicProcessor<String> notificationProcessor) {
         this.handlerRegistry = handlerRegistry;
         this.serviceRoutingSelector = serviceRoutingSelector;
         this.rSocketBrokerManager = rSocketBrokerManager;
         this.resolveService = resolveService;
         this.configurationService = configurationService;
         this.authenticationService = authenticationService;
+        this.filterChain = filterChain;
+        this.notificationProcessor = notificationProcessor;
         //init the Layout
         Image logo = new Image("/rsocket-logo.svg", "RSocket Logo");
         logo.setHeight("44px");
         logo.setAlt("RSocket Cluster");
         addToNavbar(new DrawerToggle(), logo);
 
-        final Tabs tabs = new Tabs(dashBoard(), apps(), dns(), appConfig(), services(), serviceMesh(), brokers(), jwt(), system(), faq());
+        final Tabs tabs = new Tabs(dashBoard(), apps(), dns(), appConfig(), services(), serviceTesting(), serviceMesh(), brokers(), filters(), jwt(), system(), faq());
         tabs.setOrientation(Tabs.Orientation.VERTICAL);
         tabs.addSelectedChangeListener(event -> {
             final Tab selectedTab = event.getSelectedTab();
@@ -79,7 +94,7 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("Dashboard");
         final Icon icon = DASHBOARD.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new DashboardView(handlerRegistry, serviceRoutingSelector, rSocketBrokerManager));
+        tab2Workspace.put(tab, new DashboardView(this.handlerRegistry, this.serviceRoutingSelector, this.rSocketBrokerManager));
         return tab;
     }
 
@@ -87,7 +102,7 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("Apps");
         final Icon icon = BULLETS.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new AppsView(handlerRegistry));
+        tab2Workspace.put(tab, new AppsView(this.handlerRegistry));
         return tab;
     }
 
@@ -95,7 +110,7 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("DNS");
         final Icon icon = RECORDS.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new DNSView(resolveService));
+        tab2Workspace.put(tab, new DNSView(this.resolveService));
         return tab;
     }
 
@@ -103,7 +118,7 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("AppConfig");
         final Icon icon = DATABASE.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new AppConfigView(configurationService));
+        tab2Workspace.put(tab, new AppConfigView(this.configurationService, this.rSocketBrokerManager));
         return tab;
     }
 
@@ -111,7 +126,7 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("Services");
         final Icon icon = BULLETS.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new ServicesView(handlerRegistry, serviceRoutingSelector));
+        tab2Workspace.put(tab, new ServicesView(this.handlerRegistry, this.serviceRoutingSelector));
         return tab;
     }
 
@@ -119,7 +134,7 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("ServiceMesh");
         final Icon icon = CLUSTER.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new ServiceMeshView(handlerRegistry));
+        tab2Workspace.put(tab, new ServiceMeshView(this.handlerRegistry));
         return tab;
     }
 
@@ -128,7 +143,7 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("Brokers");
         final Icon icon = CUBES.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new BrokersView(rSocketBrokerManager));
+        tab2Workspace.put(tab, new BrokersView(this.rSocketBrokerManager));
         return tab;
     }
 
@@ -137,6 +152,14 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Icon icon = SERVER.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
         tab2Workspace.put(tab, new SystemView());
+        return tab;
+    }
+
+    private Tab serviceTesting() {
+        final Span label = new Span("Service Testing");
+        final Icon icon = TOOLS.create();
+        final Tab tab = new Tab(new HorizontalLayout(icon, label));
+        tab2Workspace.put(tab, new ServiceTestingView(this.handlerRegistry, this.serviceRoutingSelector));
         return tab;
     }
 
@@ -152,10 +175,18 @@ public class MainLayout extends AppLayout implements DisposableBean {
         final Span label = new Span("JWT");
         final Icon icon = PASSWORD.create();
         final Tab tab = new Tab(new HorizontalLayout(icon, label));
-        tab2Workspace.put(tab, new JwtGeneratorView(authenticationService));
+        tab2Workspace.put(tab, new JwtGeneratorView(this.authenticationService));
         return tab;
     }
 
+
+    private Tab filters() {
+        final Span label = new Span("RSocket Filters");
+        final Icon icon = FILTER.create();
+        final Tab tab = new Tab(new HorizontalLayout(icon, label));
+        tab2Workspace.put(tab, new RSocketFiltersView(this.filterChain, this.rSocketBrokerManager));
+        return tab;
+    }
 
     @Override
     public void destroy() throws Exception {
@@ -163,6 +194,30 @@ public class MainLayout extends AppLayout implements DisposableBean {
             if (value instanceof DisposableBean) {
                 ((DisposableBean) value).destroy();
             }
+        }
+    }
+
+    @Override
+    protected void onAttach(AttachEvent attachEvent) {
+        super.onAttach(attachEvent);
+        closeSubscribeQuietly();
+        this.notificationSubscribe = this.notificationProcessor.subscribe(text -> {
+            attachEvent.getUI().access(() -> {
+                Notification.show(text);
+            });
+        });
+    }
+
+    @Override
+    protected void onDetach(DetachEvent detachEvent) {
+        super.onDetach(detachEvent);
+        closeSubscribeQuietly();
+    }
+
+    private void closeSubscribeQuietly() {
+        if (this.notificationSubscribe != null) {
+            notificationSubscribe.dispose();
+            notificationSubscribe = null;
         }
     }
 }

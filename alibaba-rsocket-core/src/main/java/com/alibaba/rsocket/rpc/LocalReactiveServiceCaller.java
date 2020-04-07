@@ -11,15 +11,6 @@ import java.util.Set;
  * @author leijuan
  */
 public interface LocalReactiveServiceCaller {
-    /**
-     * invoke real service
-     *
-     * @param serviceName service full name
-     * @param rpc         rpc name
-     * @param args        args
-     * @return result
-     */
-    Object invoke(String serviceName, String rpc, Object... args) throws Exception;
 
     /**
      * validate service and method
@@ -39,6 +30,14 @@ public interface LocalReactiveServiceCaller {
     boolean contains(String serviceName);
 
     /**
+     * validate service available
+     *
+     * @param serviceId service id
+     * @return legal
+     */
+    boolean contains(Integer serviceId);
+
+    /**
      * find all service
      *
      * @return service list
@@ -48,6 +47,7 @@ public interface LocalReactiveServiceCaller {
     /**
      * add service provider
      *
+     * @param group group
      * @param serviceName      service name
      * @param version          version
      * @param serviceInterface interface
@@ -64,4 +64,15 @@ public interface LocalReactiveServiceCaller {
      */
     @Nullable
     ReactiveMethodHandler getInvokeMethod(String serviceName, String method);
+
+    /**
+     * get invoke method
+     *
+     * @param handlerId handler id
+     * @return method object
+     */
+    @Nullable
+    ReactiveMethodHandler getInvokeMethod(Integer handlerId);
+
+    boolean containsHandler(Integer handlerId);
 }

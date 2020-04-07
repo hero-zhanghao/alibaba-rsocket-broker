@@ -6,7 +6,7 @@
     <parent>
         <groupId>com.alibaba.rsocket</groupId>
         <artifactId>alibaba-rsocket-broker-parent</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>alibaba-rsocket-spring-boot-starter</artifactId>
@@ -31,12 +31,6 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
-            <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.module</groupId>
-            <artifactId>jackson-module-kotlin</artifactId>
-            <version>${jackson.version}</version>
             <optional>true</optional>
         </dependency>
         <!--unit test-->

@@ -6,12 +6,12 @@ package com.alibaba.rsocket.events;
  * @author leijuan
  */
 public class AppStatusEvent implements CloudEventSupport<AppStatusEvent> {
-    public static Integer STATUS_CONNECTED = 0;
-    public static Integer STATUS_SERVING = 1;
-    public static Integer STATUS_OUT_OF_SERVICE = 2;
-    public static Integer STATUS_STOPPED = 2;
+    public static final Integer STATUS_CONNECTED = 0;
+    public static final Integer STATUS_SERVING = 1;
+    public static final Integer STATUS_OUT_OF_SERVICE = 2;
+    public static final Integer STATUS_STOPPED = -1;
     /**
-     * App id
+     * App UUID
      */
     private String id;
     /**
@@ -41,6 +41,20 @@ public class AppStatusEvent implements CloudEventSupport<AppStatusEvent> {
 
     public void setStatus(Integer status) {
         this.status = status;
+    }
+
+    public static String statusText(Integer status) {
+        if (STATUS_CONNECTED.equals(status)) {
+            return "Connected";
+        } else if (STATUS_SERVING.equals(status)) {
+            return "Serving";
+        } else if (STATUS_OUT_OF_SERVICE.equals(status)) {
+            return "OutOfService";
+        } else if (STATUS_STOPPED.equals(status)) {
+            return "Stopped";
+        } else {
+            return "Unknown";
+        }
     }
 
 }

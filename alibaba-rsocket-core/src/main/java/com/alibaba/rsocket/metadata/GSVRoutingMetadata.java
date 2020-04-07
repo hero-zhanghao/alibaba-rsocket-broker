@@ -3,7 +3,7 @@ package com.alibaba.rsocket.metadata;
 import com.alibaba.rsocket.ServiceLocator;
 import com.alibaba.rsocket.utils.MurmurHash3;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.rsocket.metadata.RoutingMetadata;
 import io.rsocket.metadata.TaggingMetadataFlyweight;
 
@@ -20,7 +20,7 @@ public class GSVRoutingMetadata implements MetadataAware {
     /**
      * group: region, datacenter, virtual group in datacenter
      */
-    private String group = "";
+    private String group;
     /**
      * service name
      */
@@ -32,20 +32,36 @@ public class GSVRoutingMetadata implements MetadataAware {
     /**
      * version
      */
-    private String version = "";
+    private String version;
     /**
      * endpoint
      */
     private String endpoint;
+    /**
+     * target instance ID
+     */
+    private transient Integer targetId;
 
     public GSVRoutingMetadata() {
     }
 
     public GSVRoutingMetadata(String group, String service, String method, String version) {
-        this.group = group == null ? "" : group;
+        this.group = group;
         this.service = service;
         this.method = method;
-        this.version = version == null ? "" : version;
+        this.version = version;
+    }
+
+    public GSVRoutingMetadata(String group, String routeKey, String version) {
+        this.group = group;
+        int methodSymbolPosition = routeKey.lastIndexOf('.');
+        if (methodSymbolPosition > 0) {
+            this.service = routeKey.substring(0, methodSymbolPosition);
+            this.method = routeKey.substring(methodSymbolPosition + 1);
+        } else {
+            this.service = routeKey;
+        }
+        this.version = version;
     }
 
     public String getGroup() {
@@ -80,12 +96,29 @@ public class GSVRoutingMetadata implements MetadataAware {
         this.version = version;
     }
 
-    public Integer id() {
-        return MurmurHash3.hash32(ServiceLocator.serviceId(group, service, group));
+    public int getTargetId() {
+        return targetId;
     }
 
-    public String routing() {
-        return ServiceLocator.serviceId(group, service, group);
+    public void setTargetId(int targetId) {
+        this.targetId = targetId;
+    }
+
+    public Integer id() {
+        if (targetId != null) return targetId;
+        if (group == null && version == null) {
+            return MurmurHash3.hash32(service);
+        } else {
+            return MurmurHash3.hash32(ServiceLocator.serviceId(group, service, version));
+        }
+    }
+
+    public Integer handlerId() {
+        return MurmurHash3.hash32(service + "." + method);
+    }
+
+    public String gsv() {
+        return ServiceLocator.serviceId(group, service, version);
     }
 
     public String getEndpoint() {
@@ -109,37 +142,15 @@ public class GSVRoutingMetadata implements MetadataAware {
     @Override
     public ByteBuf getContent() {
         List<String> tags = new ArrayList<>();
-        tags.add((group == null ? "" : group) + ":" + service + ":" + (version == null ? "" : version));
-        if (method != null && !method.isEmpty()) {
+        tags.add(assembleRoutingKey());
+        //method included in routing key
+        /*if (method != null && !method.isEmpty()) {
             tags.add("m=" + method);
-        }
+        }*/
         if (endpoint != null && !endpoint.isEmpty()) {
             tags.add("e=" + endpoint);
         }
-        return TaggingMetadataFlyweight.createTaggingContent(ByteBufAllocator.DEFAULT, tags);
-    }
-
-    /**
-     * format routing as "group:service:version?m=login&e=xxxx"
-     *
-     * @return data format
-     */
-    public String formatData() {
-        StringBuilder builder = new StringBuilder();
-        String serviceFullName = group + ":" + service + ":" + version;
-        builder.append(serviceFullName);
-        if (method != null) {
-            builder.append("?").append("m=").append(method);
-        }
-        if (endpoint != null) {
-            builder.append("&").append("e=").append(endpoint);
-        }
-        return builder.toString();
-    }
-
-    @Override
-    public String toString() {
-        return formatData();
+        return TaggingMetadataFlyweight.createTaggingContent(PooledByteBufAllocator.DEFAULT, tags);
     }
 
     /**
@@ -163,50 +174,58 @@ public class GSVRoutingMetadata implements MetadataAware {
         }
     }
 
-    @Override
-    public String toText() throws Exception {
-        return formatData();
-    }
-
-    @Override
-    public void load(String text) {
-        String routing;
-        String tags = null;
-        if (text.contains("?")) {
-            routing = text.substring(0, text.indexOf("?"));
-            tags = text.substring(text.indexOf("?") + 1);
-        } else {
-            routing = text;
+    private void parseRoutingKey(String routingKey) {
+        String temp = routingKey;
+        //group parse
+        int groupSymbolPosition = temp.indexOf('!');
+        if (groupSymbolPosition > 0) {
+            this.group = temp.substring(0, groupSymbolPosition);
+            temp = temp.substring(groupSymbolPosition + 1);
         }
-        //routing
-        parseRoutingKey(routing);
-        if (tags != null) {
-            for (String tag : tags.split("&")) {
-                if (tag.startsWith("m=")) {
-                    this.method = tag.substring(2);
-                } else if (tag.startsWith("e=")) {
-                    this.endpoint = tag.substring(2);
-                }
-            }
+        //version
+        int versionSymbolPosition = temp.lastIndexOf(':');
+        if (versionSymbolPosition > 0) {
+            this.version = temp.substring(versionSymbolPosition + 1);
+            temp = temp.substring(0, versionSymbolPosition);
+        }
+        //service & method
+        int methodSymbolPosition = temp.lastIndexOf('.');
+        if (methodSymbolPosition > 0) {
+            this.service = temp.substring(0, methodSymbolPosition);
+            this.method = temp.substring(methodSymbolPosition + 1);
+        } else {
+            this.service = temp;
         }
     }
 
-    private void parseRoutingKey(String routing) {
-        if (routing.contains(":")) {
-            String[] parts = routing.split(":");
-            this.group = parts[0];
-            this.service = parts[1];
-            if (parts.length > 2) {
-                this.version = parts[2];
-            }
-        } else {
-            this.service = routing;
+    public String assembleRoutingKey() {
+        StringBuilder routingBuilder = new StringBuilder();
+        //group
+        if (group != null && !group.isEmpty()) {
+            routingBuilder.append(group).append('!');
         }
+        //service
+        routingBuilder.append(service);
+        //method
+        if (method != null && !method.isEmpty()) {
+            routingBuilder.append('.').append(method);
+        }
+        //version
+        if (version != null && !version.isEmpty()) {
+            routingBuilder.append(':').append(version);
+        }
+        return routingBuilder.toString();
     }
 
     public static GSVRoutingMetadata from(ByteBuf content) {
         GSVRoutingMetadata temp = new GSVRoutingMetadata();
         temp.load(content);
+        return temp;
+    }
+
+    public static GSVRoutingMetadata from(String routingKey) {
+        GSVRoutingMetadata temp = new GSVRoutingMetadata();
+        temp.parseRoutingKey(routingKey);
         return temp;
     }
 }

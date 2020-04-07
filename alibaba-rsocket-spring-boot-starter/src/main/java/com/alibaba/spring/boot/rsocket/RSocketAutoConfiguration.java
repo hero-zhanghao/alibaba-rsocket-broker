@@ -4,14 +4,13 @@ import com.alibaba.rsocket.RSocketRequesterSupport;
 import com.alibaba.rsocket.health.RSocketServiceHealth;
 import com.alibaba.rsocket.listen.RSocketResponderHandlerFactory;
 import com.alibaba.rsocket.observability.MetricsService;
-import com.alibaba.rsocket.route.RSocketFilter;
-import com.alibaba.rsocket.route.RSocketFilterChain;
 import com.alibaba.rsocket.route.RoutingEndpoint;
 import com.alibaba.rsocket.rpc.LocalReactiveServiceCaller;
 import com.alibaba.rsocket.rpc.RSocketResponderHandler;
 import com.alibaba.rsocket.upstream.UpstreamCluster;
 import com.alibaba.rsocket.upstream.UpstreamManager;
 import com.alibaba.rsocket.upstream.UpstreamManagerImpl;
+import com.alibaba.spring.boot.rsocket.health.RSocketServiceHealthImpl;
 import com.alibaba.spring.boot.rsocket.observability.MetricsServicePrometheusImpl;
 import com.alibaba.spring.boot.rsocket.responder.RSocketServicesPublishHook;
 import com.alibaba.spring.boot.rsocket.responder.invocation.RSocketServiceAnnotationProcessor;
@@ -25,7 +24,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -34,8 +33,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import reactor.core.publisher.Mono;
 import reactor.extra.processor.TopicProcessor;
-
-import java.util.stream.Collectors;
 
 /**
  * RSocket Auto configuration: listen, upstream manager, handler etc
@@ -59,25 +56,19 @@ public class RSocketAutoConfiguration {
         return new RequesterCloudEventProcessor();
     }
 
-    @Bean
-    public RSocketFilterChain rsocketFilterChain(ObjectProvider<RSocketFilter> rsocketFilters) {
-        return new RSocketFilterChain(rsocketFilters.orderedStream().collect(Collectors.toList()));
-    }
-
     /**
-     * socket responder handler as SocketAcceptor bean
+     * socket responder handler as SocketAcceptor bean.
+     * To validate connection, please use RSocketListenerCustomizer and add AcceptorInterceptor by addSocketAcceptorInterceptor api
      *
-     * @param serviceCaller      service caller
-     * @param eventProcessor     event processor
-     * @param rsocketFilterChain rsocket filter chain
+     * @param serviceCaller  service caller
+     * @param eventProcessor event processor
      * @return handler factor
      */
     @Bean
     @ConditionalOnMissingBean
     public RSocketResponderHandlerFactory rsocketResponderHandlerFactory(@Autowired LocalReactiveServiceCaller serviceCaller,
-                                                                         @Autowired @Qualifier("reactiveCloudEventProcessor") TopicProcessor<CloudEventImpl> eventProcessor,
-                                                                         @Autowired RSocketFilterChain rsocketFilterChain) {
-        return (setup, peerSocket) -> Mono.fromCallable(() -> new RSocketResponderHandler(serviceCaller, eventProcessor, rsocketFilterChain, peerSocket));
+                                                                         @Autowired @Qualifier("reactiveCloudEventProcessor") TopicProcessor<CloudEventImpl> eventProcessor) {
+        return (setupPayload, requester) -> Mono.fromCallable(() -> new RSocketResponderHandler(serviceCaller, eventProcessor, requester, setupPayload));
     }
 
     @Bean
@@ -96,7 +87,7 @@ public class RSocketAutoConfiguration {
     }
 
     @Bean(initMethod = "init", destroyMethod = "close")
-    public UpstreamManager rSocketUpstreamManager(@Autowired RSocketRequesterSupport rsocketRequesterSupport) throws JwtTokenNotFoundException {
+    public UpstreamManager rsocketUpstreamManager(@Autowired RSocketRequesterSupport rsocketRequesterSupport) throws JwtTokenNotFoundException {
         UpstreamManager upstreamManager = new UpstreamManagerImpl(rsocketRequesterSupport);
         if (properties.getBrokers() != null && !properties.getBrokers().isEmpty()) {
             if (properties.getJwtToken() == null || properties.getJwtToken().isEmpty()) {
@@ -118,17 +109,17 @@ public class RSocketAutoConfiguration {
 
     @Bean
     @ConditionalOnProperty("rsocket.brokers")
-    public RSocketBrokerHealthIndicator rsocketBrokerHealth(UpstreamManager upstreamManager, @Value("${rsocket.brokers}") String brokers) {
-        return new RSocketBrokerHealthIndicator(upstreamManager, brokers);
+    public RSocketBrokerHealthIndicator rsocketBrokerHealth(RSocketEndpoint rsocketEndpoint, UpstreamManager upstreamManager, @Value("${rsocket.brokers}") String brokers) {
+        return new RSocketBrokerHealthIndicator(rsocketEndpoint, upstreamManager, brokers);
     }
 
     @Bean
-    public RSocketEndpoint rsocketEndpoint(@Autowired UpstreamManager upstreamManager, @Autowired LocalReactiveServiceCaller localReactiveServiceCaller) {
-        return new RSocketEndpoint(properties, upstreamManager, localReactiveServiceCaller);
+    public RSocketEndpoint rsocketEndpoint(@Autowired UpstreamManager upstreamManager, @Autowired RSocketRequesterSupport rsocketRequesterSupport) {
+        return new RSocketEndpoint(properties, upstreamManager, rsocketRequesterSupport);
     }
 
     @Bean
-    @ConditionalOnBean(PrometheusMeterRegistry.class)
+    @ConditionalOnClass(PrometheusMeterRegistry.class)
     public MetricsService metricsService(PrometheusMeterRegistry meterRegistry) {
         return new MetricsServicePrometheusImpl(meterRegistry);
     }
@@ -136,5 +127,11 @@ public class RSocketAutoConfiguration {
     @Bean
     public RSocketServicesPublishHook rsocketServicesPublishHook() {
         return new RSocketServicesPublishHook();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public RSocketServiceHealth rsocketServiceHealth() {
+        return new RSocketServiceHealthImpl();
     }
 }
