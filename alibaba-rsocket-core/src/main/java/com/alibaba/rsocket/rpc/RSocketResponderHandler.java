@@ -1,19 +1,19 @@
 package com.alibaba.rsocket.rpc;
 
+import brave.Span;
+import brave.Tracer;
 import brave.propagation.TraceContext;
 import com.alibaba.rsocket.RSocketAppContext;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
 import com.alibaba.rsocket.cloudevents.CloudEventRSocket;
 import com.alibaba.rsocket.cloudevents.EventReply;
 import com.alibaba.rsocket.listen.RSocketResponderSupport;
 import com.alibaba.rsocket.metadata.*;
 import com.alibaba.rsocket.observability.RsocketErrorCode;
-import io.cloudevents.json.Json;
-import io.cloudevents.v1.CloudEventImpl;
 import io.netty.util.ReferenceCountUtil;
 import io.rsocket.ConnectionSetupPayload;
 import io.rsocket.Payload;
 import io.rsocket.RSocket;
-import io.rsocket.ResponderRSocket;
 import io.rsocket.exceptions.InvalidException;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -32,7 +32,7 @@ import java.nio.charset.StandardCharsets;
  * @author leijuan
  */
 @SuppressWarnings("Duplicates")
-public class RSocketResponderHandler extends RSocketResponderSupport implements ResponderRSocket, CloudEventRSocket {
+public class RSocketResponderHandler extends RSocketResponderSupport implements CloudEventRSocket {
     /**
      * requester from peer
      */
@@ -45,6 +45,7 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
     private Mono<Void> comboOnClose;
     protected TopicProcessor<CloudEventImpl> eventProcessor;
     private boolean braveTracing = true;
+    private Tracer tracer;
 
     public RSocketResponderHandler(LocalReactiveServiceCaller serviceCall,
                                    TopicProcessor<CloudEventImpl> eventProcessor,
@@ -73,7 +74,12 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
         }
     }
 
+    public void setTracer(Tracer tracer) {
+        this.tracer = tracer;
+    }
+
     @Override
+    @NotNull
     public Mono<Payload> requestResponse(Payload payload) {
         RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(payload.metadata());
         GSVRoutingMetadata routingMetaData = getGsvRoutingMetadata(compositeMetadata);
@@ -91,6 +97,7 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
     }
 
     @Override
+    @NotNull
     public Mono<Void> fireAndForget(Payload payload) {
         RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(payload.metadata());
         GSVRoutingMetadata routingMetaData = getGsvRoutingMetadata(compositeMetadata);
@@ -124,6 +131,7 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
     }
 
     @Override
+    @NotNull
     public Flux<Payload> requestStream(Payload payload) {
         RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(payload.metadata());
         GSVRoutingMetadata routingMetaData = getGsvRoutingMetadata(compositeMetadata);
@@ -140,7 +148,6 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
         return injectTraceContext(result, compositeMetadata);
     }
 
-    @Override
     public Flux<Payload> requestChannel(Payload signal, Publisher<Payload> payloads) {
         RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(signal.metadata());
         GSVRoutingMetadata routingMetaData = getGsvRoutingMetadata(compositeMetadata);
@@ -162,10 +169,11 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
 
     @SuppressWarnings("ConstantConditions")
     @Override
-    public final Flux<Payload> requestChannel(Publisher<Payload> payloads) {
+    @NotNull
+    public final Flux<Payload> requestChannel(@NotNull Publisher<Payload> payloads) {
         if (payloads instanceof Flux) {
             Flux<Payload> payloadsWithSignalRouting = (Flux<Payload>) payloads;
-            return payloadsWithSignalRouting.switchOnFirst((signal, flux) -> requestChannel(signal.get(), flux.skip(1)));
+            return payloadsWithSignalRouting.switchOnFirst((signal, flux) -> requestChannel(signal.get(), flux));
         }
         return Flux.error(new InvalidException(RsocketErrorCode.message("RST-201400")));
     }
@@ -177,10 +185,14 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
      * @return mono empty
      */
     @Override
-    public Mono<Void> metadataPush(Payload payload) {
+    @NotNull
+    public Mono<Void> metadataPush(@NotNull Payload payload) {
         try {
             if (payload.metadata().readableBytes() > 0) {
-                return fireCloudEvent(Json.decodeValue(payload.getMetadataUtf8(), CLOUD_EVENT_TYPE_REFERENCE));
+                CloudEventImpl<?> cloudEvent = extractCloudEventsFromMetadataPush(payload);
+                if (cloudEvent != null) {
+                    return fireCloudEvent(cloudEvent);
+                }
             }
         } catch (Exception e) {
             log.error(RsocketErrorCode.message(RsocketErrorCode.message("RST-610500", e.getMessage())), e);
@@ -206,6 +218,7 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
     }
 
     @Override
+    @NotNull
     public Mono<Void> onClose() {
         return this.comboOnClose;
     }
@@ -233,30 +246,38 @@ public class RSocketResponderHandler extends RSocketResponderSupport implements 
     @NotNull
     private TraceContext constructTraceContext(@NotNull TracingMetadata tracingMetadata) {
         return TraceContext.newBuilder()
-                .parentId(tracingMetadata.getParentSpanId())
-                .spanId(tracingMetadata.getSpanId())
-                .traceIdHigh(tracingMetadata.getTraceIdHigh())
-                .traceId(tracingMetadata.getTraceIdLow())
+                .parentId(tracingMetadata.parentId())
+                .spanId(tracingMetadata.spanId())
+                .traceIdHigh(tracingMetadata.traceIdHigh())
+                .traceId(tracingMetadata.traceId())
                 .build();
     }
 
     <T> Mono<T> injectTraceContext(Mono<T> payloadMono, RSocketCompositeMetadata compositeMetadata) {
-        if (this.braveTracing) {
+        if (this.braveTracing && this.tracer != null) {
             TracingMetadata tracingMetadata = compositeMetadata.getTracingMetadata();
             if (tracingMetadata != null) {
                 TraceContext traceContext = constructTraceContext(tracingMetadata);
-                return payloadMono.subscriberContext(Context.of(TraceContext.class, traceContext));
+                Span span = tracer.newChild(traceContext);
+                return payloadMono
+                        .doOnError(span::error)
+                        .doOnSuccess(payload -> span.finish())
+                        .subscriberContext(Context.of(TraceContext.class, traceContext));
             }
         }
         return payloadMono;
     }
 
     Flux<Payload> injectTraceContext(Flux<Payload> payloadFlux, RSocketCompositeMetadata compositeMetadata) {
-        if (this.braveTracing) {
+        if (this.braveTracing && this.tracer != null) {
             TracingMetadata tracingMetadata = compositeMetadata.getTracingMetadata();
             if (tracingMetadata != null) {
                 TraceContext traceContext = constructTraceContext(tracingMetadata);
-                return payloadFlux.subscriberContext(Context.of(TraceContext.class, traceContext));
+                Span span = tracer.newChild(traceContext);
+                return payloadFlux
+                        .doOnError(span::error)
+                        .doOnComplete(span::finish)
+                        .subscriberContext(Context.of(TraceContext.class, traceContext));
             }
         }
         return payloadFlux;

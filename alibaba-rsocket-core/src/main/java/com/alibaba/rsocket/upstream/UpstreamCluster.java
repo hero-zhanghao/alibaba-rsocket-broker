@@ -51,6 +51,11 @@ public class UpstreamCluster implements Initializable, Closeable {
         this.version = version;
     }
 
+    public UpstreamCluster(String group, String serviceName, String version, List<String> uris) {
+        this(group, serviceName, version);
+        this.setUris(uris);
+    }
+
     public String getServiceName() {
         return serviceName;
     }
@@ -118,8 +123,10 @@ public class UpstreamCluster implements Initializable, Closeable {
     @Override
     public void init() {
         if (status != 1) {
+            if (!this.uris.isEmpty()) {
+                freshUpstreams();
+            }
             loadBalancedRSocket = new LoadBalancedRSocket(getServiceId(), urisProcessor, rsocketRequesterSupport);
-            freshUpstreams();
             status = 1;
         }
     }

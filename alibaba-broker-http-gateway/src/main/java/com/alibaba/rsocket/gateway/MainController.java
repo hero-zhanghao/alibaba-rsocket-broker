@@ -31,19 +31,22 @@ public class MainController {
     @Value("${restapi.auth-required}")
     private boolean authRequired;
     private static MessageMimeTypeMetadata jsonMetaEncoding = new MessageMimeTypeMetadata(RSocketMimeType.Json);
+    private static MessageMimeTypeMetadata cloudEventsEncoding = new MessageMimeTypeMetadata(RSocketMimeType.CloudEventsJson);
     private RSocket rsocket;
 
     public MainController(UpstreamManager upstreamManager) {
         rsocket = upstreamManager.findBroker().getLoadBalancedRSocket();
     }
 
-    @RequestMapping(value = "/{serviceName}/{method}", produces = {MediaType.APPLICATION_JSON_VALUE})
+    @RequestMapping(value = "/api/{serviceName}/{method}", produces = {MediaType.APPLICATION_JSON_VALUE})
     public Mono<ResponseEntity<ByteBuf>> handle(@PathVariable("serviceName") String serviceName,
                                                 @PathVariable("method") String method,
                                                 @RequestParam(name = "group", required = false, defaultValue = "") String group,
                                                 @RequestParam(name = "version", required = false, defaultValue = "") String version,
                                                 @RequestBody(required = false) ByteBuf body,
-                                                @RequestHeader(name = "Authorization", required = false, defaultValue = "") String authorizationValue) {
+                                                @RequestHeader(name = "Authorization", required = false, defaultValue = "") String authorizationValue,
+                                                @RequestHeader(name = "Content-Type", required = false, defaultValue = "") String contentType
+    ) {
         boolean authenticated;
         if (!authRequired) {
             authenticated = true;
@@ -55,7 +58,12 @@ public class MainController {
         }
         try {
             GSVRoutingMetadata routingMetadata = new GSVRoutingMetadata(group, serviceName, method, version);
-            RSocketCompositeMetadata compositeMetadata = RSocketCompositeMetadata.from(routingMetadata, jsonMetaEncoding);
+            RSocketCompositeMetadata compositeMetadata;
+            if (contentType.startsWith("application/cloudevents+json")) {
+                compositeMetadata = RSocketCompositeMetadata.from(routingMetadata, cloudEventsEncoding);
+            } else {
+                compositeMetadata = RSocketCompositeMetadata.from(routingMetadata, jsonMetaEncoding);
+            }
             ByteBuf bodyBuf = body == null ? EMPTY_BUFFER : body;
             return rsocket.requestResponse(ByteBufPayload.create(bodyBuf, compositeMetadata.getContent()))
                     .map(payload -> {

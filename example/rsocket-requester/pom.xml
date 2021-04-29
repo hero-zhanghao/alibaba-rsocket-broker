@@ -27,17 +27,12 @@
         </dependency>
         <dependency>
             <groupId>com.alibaba.broker.example</groupId>
-            <artifactId>user-service-api</artifactId>
+            <artifactId>user-service-spring-boot-starter</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
-            <groupId>org.springframework</groupId>
-            <artifactId>spring-messaging</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.alibaba.rsocket</groupId>
-            <artifactId>alibaba-rsocket-spring-boot-starter</artifactId>
-            <version>${alibaba-rsocket.version}</version>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-rsocket</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -64,5 +59,32 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>buildpacks</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <configuration>
+                            <image>
+                                <name>rsocket-requester:latest</name>
+                                <builder>paketobuildpacks/builder:full</builder>
+                            </image>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>build-image</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

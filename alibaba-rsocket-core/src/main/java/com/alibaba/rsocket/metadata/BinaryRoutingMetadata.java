@@ -13,6 +13,7 @@ import io.rsocket.util.NumberUtils;
 public class BinaryRoutingMetadata implements MetadataAware {
     private Integer serviceId;
     private Integer handlerId;
+    private int flags = 0;
     private byte[] routingText;
 
     public BinaryRoutingMetadata() {
@@ -21,12 +22,14 @@ public class BinaryRoutingMetadata implements MetadataAware {
     public BinaryRoutingMetadata(Integer serviceId, Integer handlerId) {
         this.serviceId = serviceId;
         this.handlerId = handlerId;
+        this.flags = 0;
     }
 
     public BinaryRoutingMetadata(Integer serviceId, Integer handlerId, byte[] routingText) {
         this.serviceId = serviceId;
         this.handlerId = handlerId;
         this.routingText = routingText;
+        this.flags = 0;
     }
 
     @Override
@@ -47,6 +50,26 @@ public class BinaryRoutingMetadata implements MetadataAware {
         return handlerId;
     }
 
+    public int getFlags() {
+        return flags;
+    }
+
+    public void setFlags(int flags) {
+        this.flags = flags;
+    }
+
+    public boolean isSticky() {
+        return (this.flags & 0x01) == 0x01;
+    }
+
+    public void setSticky(boolean sticky) {
+        if (sticky) {
+            this.flags = this.flags | 0x01;
+        } else {
+            this.flags = this.flags & (Integer.MAX_VALUE - 1);
+        }
+    }
+
     public byte[] getRoutingText() {
         return routingText;
     }
@@ -57,13 +80,14 @@ public class BinaryRoutingMetadata implements MetadataAware {
 
     @Override
     public ByteBuf getContent() {
-        int capacity = 8;
+        int capacity = 12;
         if (this.routingText != null) {
-            capacity = 8 + this.routingText.length;
+            capacity = 12 + this.routingText.length;
         }
         ByteBuf byteBuf = PooledByteBufAllocator.DEFAULT.buffer(capacity, capacity);
         byteBuf.writeInt(this.serviceId);
         byteBuf.writeInt(this.handlerId);
+        byteBuf.writeInt(this.flags);
         if (this.routingText != null) {
             byteBuf.writeBytes(this.routingText);
         }
@@ -72,15 +96,16 @@ public class BinaryRoutingMetadata implements MetadataAware {
 
 
     public ByteBuf getHeaderAndContent() {
-        int capacity = 12;
+        int capacity = 16;
         if (this.routingText != null) {
-            capacity = 12 + this.routingText.length;
+            capacity = 16 + this.routingText.length;
         }
         ByteBuf byteBuf = PooledByteBufAllocator.DEFAULT.buffer(capacity, capacity);
         byteBuf.writeByte(WellKnownMimeType.MESSAGE_RSOCKET_BINARY_ROUTING.getIdentifier() | 0x80);
         NumberUtils.encodeUnsignedMedium(byteBuf, capacity - 4);
         byteBuf.writeInt(this.serviceId);
         byteBuf.writeInt(this.handlerId);
+        byteBuf.writeInt(this.flags);
         if (this.routingText != null) {
             byteBuf.writeBytes(this.routingText);
         }
@@ -95,6 +120,7 @@ public class BinaryRoutingMetadata implements MetadataAware {
     public void load(ByteBuf byteBuf) {
         this.serviceId = byteBuf.readInt();
         this.handlerId = byteBuf.readInt();
+        this.flags = byteBuf.readInt();
         int readableBytesLen = byteBuf.readableBytes();
         if (readableBytesLen > 0) {
             this.routingText = new byte[readableBytesLen];

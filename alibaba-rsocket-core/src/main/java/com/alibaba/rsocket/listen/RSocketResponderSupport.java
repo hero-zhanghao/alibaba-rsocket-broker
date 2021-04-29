@@ -1,5 +1,6 @@
 package com.alibaba.rsocket.listen;
 
+import com.alibaba.rsocket.AbstractRSocket;
 import com.alibaba.rsocket.encoding.RSocketEncodingFacade;
 import com.alibaba.rsocket.metadata.GSVRoutingMetadata;
 import com.alibaba.rsocket.metadata.MessageAcceptMimeTypesMetadata;
@@ -9,12 +10,10 @@ import com.alibaba.rsocket.observability.RsocketErrorCode;
 import com.alibaba.rsocket.rpc.LocalReactiveServiceCaller;
 import com.alibaba.rsocket.rpc.ReactiveMethodHandler;
 import io.netty.util.ReferenceCountUtil;
-import io.rsocket.AbstractRSocket;
 import io.rsocket.Payload;
 import io.rsocket.exceptions.InvalidException;
 import io.rsocket.util.ByteBufPayload;
 import org.jetbrains.annotations.Nullable;
-import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -28,7 +27,7 @@ import reactor.core.publisher.Mono;
 public abstract class RSocketResponderSupport extends AbstractRSocket {
     protected Logger log = LoggerFactory.getLogger(this.getClass());
     protected LocalReactiveServiceCaller localServiceCaller;
-    protected RSocketEncodingFacade encodingFacade = RSocketEncodingFacade.getInstance();
+    public static final RSocketEncodingFacade encodingFacade = RSocketEncodingFacade.getInstance();
 
     protected Mono<Payload> localRequestResponse(GSVRoutingMetadata routing,
                                                  MessageMimeTypeMetadata dataEncodingMetadata,
@@ -41,7 +40,24 @@ public abstract class RSocketResponderSupport extends AbstractRSocket {
                 if (methodHandler.isAsyncReturn()) {
                     result = invokeLocalService(methodHandler, dataEncodingMetadata, payload);
                 } else {
-                    result = Mono.fromCallable(() -> invokeLocalService(methodHandler, dataEncodingMetadata, payload));
+                    result = Mono.create((sink) -> {
+                        try {
+                            Object resultObj = invokeLocalService(methodHandler, dataEncodingMetadata, payload);
+                            if (resultObj == null) {
+                                sink.success();
+                            } else if (resultObj instanceof Mono) {
+                                Mono<Object> monoObj = (Mono<Object>) resultObj;
+                                monoObj.doOnError(sink::error)
+                                        .doOnNext(sink::success)
+                                        .thenEmpty(Mono.fromRunnable(sink::success))
+                                        .subscribe();
+                            } else {
+                                sink.success(resultObj);
+                            }
+                        } catch (Exception e) {
+                            sink.error(e);
+                        }
+                    });
                 }
                 //composite data for return value
                 RSocketMimeType resultEncodingType = resultEncodingType(messageAcceptMimeTypesMetadata, dataEncodingMetadata.getRSocketMimeType(), methodHandler);
@@ -124,7 +140,7 @@ public abstract class RSocketResponderSupport extends AbstractRSocket {
             return Flux.error(new InvalidException(RsocketErrorCode.message("RST-900500", e.getMessage())));
         }
     }
-    
+
     @SuppressWarnings("ReactiveStreamsNullableInLambdaInTransform")
     public Flux<Payload> localRequestChannel(GSVRoutingMetadata routing,
                                              MessageMimeTypeMetadata dataEncodingMetadata,
@@ -139,17 +155,21 @@ public abstract class RSocketResponderSupport extends AbstractRSocket {
                             .map(payload -> {
                                 return encodingFacade.decodeResult(dataEncodingMetadata.getRSocketMimeType(), payload.data(), methodHandler.getInferredClassForParameter(0));
                             });
-                    result = methodHandler.invoke(paramFlux);
+                    Object lastParam = methodHandler.getReactiveAdapter().fromPublisher(paramFlux, methodHandler.getLastParamType());
+                    result = methodHandler.invoke(lastParam);
                 } else {
                     Object paramFirst = encodingFacade.decodeResult(dataEncodingMetadata.getRSocketMimeType(), signal.data(), methodHandler.getParameterTypes()[0]);
                     Flux<Object> paramFlux = payloads
                             .map(payload -> {
                                 return encodingFacade.decodeResult(dataEncodingMetadata.getRSocketMimeType(), payload.data(), methodHandler.getInferredClassForParameter(1));
                             });
-                    result = methodHandler.invoke(paramFirst, paramFlux);
+                    Object lastParam = methodHandler.getReactiveAdapter().fromPublisher(paramFlux, methodHandler.getLastParamType());
+                    result = methodHandler.invoke(paramFirst, lastParam);
                 }
                 if (result instanceof Mono) {
                     result = Flux.from((Mono<?>) result);
+                } else {
+                    result = methodHandler.getReactiveAdapter().toFlux(result);
                 }
                 //composite data for return value
                 RSocketMimeType resultEncodingType = resultEncodingType(messageAcceptMimeTypesMetadata, dataEncodingMetadata.getRSocketMimeType(), methodHandler);

@@ -1,6 +1,11 @@
 package com.alibaba.spring.boot.rsocket;
 
+import brave.Tracing;
+import com.alibaba.rsocket.RSocketAppContext;
 import com.alibaba.rsocket.RSocketRequesterSupport;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
+import com.alibaba.rsocket.events.CloudEventsConsumer;
+import com.alibaba.rsocket.events.CloudEventsProcessor;
 import com.alibaba.rsocket.health.RSocketServiceHealth;
 import com.alibaba.rsocket.listen.RSocketResponderHandlerFactory;
 import com.alibaba.rsocket.observability.MetricsService;
@@ -8,8 +13,8 @@ import com.alibaba.rsocket.route.RoutingEndpoint;
 import com.alibaba.rsocket.rpc.LocalReactiveServiceCaller;
 import com.alibaba.rsocket.rpc.RSocketResponderHandler;
 import com.alibaba.rsocket.upstream.UpstreamCluster;
+import com.alibaba.rsocket.upstream.UpstreamClusterChangedEventConsumer;
 import com.alibaba.rsocket.upstream.UpstreamManager;
-import com.alibaba.rsocket.upstream.UpstreamManagerImpl;
 import com.alibaba.spring.boot.rsocket.health.RSocketServiceHealthImpl;
 import com.alibaba.spring.boot.rsocket.observability.MetricsServicePrometheusImpl;
 import com.alibaba.spring.boot.rsocket.responder.RSocketServicesPublishHook;
@@ -17,44 +22,72 @@ import com.alibaba.spring.boot.rsocket.responder.invocation.RSocketServiceAnnota
 import com.alibaba.spring.boot.rsocket.upstream.JwtTokenNotFoundException;
 import com.alibaba.spring.boot.rsocket.upstream.RSocketRequesterSupportBuilderImpl;
 import com.alibaba.spring.boot.rsocket.upstream.RSocketRequesterSupportCustomizer;
-import io.cloudevents.v1.CloudEventImpl;
+import com.alibaba.spring.boot.rsocket.upstream.SmartLifecycleUpstreamManagerImpl;
 import io.micrometer.prometheus.PrometheusMeterRegistry;
 import io.rsocket.SocketAcceptor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.*;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.context.WebServerInitializedEvent;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationListener;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import reactor.core.publisher.Mono;
 import reactor.extra.processor.TopicProcessor;
 
+import java.util.stream.Collectors;
+
+
 /**
  * RSocket Auto configuration: listen, upstream manager, handler etc
  *
  * @author leijuan
  */
-@SuppressWarnings("deprecation")
+@SuppressWarnings({"rawtypes", "SpringJavaInjectionPointsAutowiringInspection"})
 @Configuration
+@ConditionalOnExpression("${rsocket.disabled:false}==false")
 @EnableConfigurationProperties(RSocketProperties.class)
 public class RSocketAutoConfiguration {
     @Autowired
     private RSocketProperties properties;
+    @Value("${server.port:0}")
+    private int serverPort;
+    @Value("${management.server.port:0}")
+    private int managementServerPort;
+    @Autowired
+    private ApplicationContext applicationContext;
 
+    // section cloudevents processor
     @Bean
     public TopicProcessor<CloudEventImpl> reactiveCloudEventProcessor() {
         return TopicProcessor.<CloudEventImpl>builder().name("cloud-events-processor").build();
     }
 
     @Bean(initMethod = "init")
-    public RequesterCloudEventProcessor requesterCloudEventProcessor() {
-        return new RequesterCloudEventProcessor();
+    public CloudEventsProcessor cloudEventsProcessor(@Autowired @Qualifier("reactiveCloudEventProcessor") TopicProcessor<CloudEventImpl> eventProcessor,
+                                                     ObjectProvider<CloudEventsConsumer> consumers) {
+        return new CloudEventsProcessor(eventProcessor, consumers.stream().collect(Collectors.toList()));
     }
+
+    @Bean
+    public UpstreamClusterChangedEventConsumer upstreamClusterChangedEventConsumer(@Autowired UpstreamManager upstreamManager) {
+        return new UpstreamClusterChangedEventConsumer(upstreamManager);
+    }
+
+    @Bean
+    public CloudEventToListenerConsumer cloudEventToListenerConsumer() {
+        return new CloudEventToListenerConsumer();
+    }
+
+  /*  @Bean
+    public InvalidCacheEventConsumer invalidCacheEventConsumer() {
+        return new InvalidCacheEventConsumer();
+    }*/
 
     /**
      * socket responder handler as SocketAcceptor bean.
@@ -65,13 +98,27 @@ public class RSocketAutoConfiguration {
      * @return handler factor
      */
     @Bean
-    @ConditionalOnMissingBean
+    @ConditionalOnMissingBean(type = {"brave.Tracing", "com.alibaba.rsocket.listen.RSocketResponderHandlerFactory"})
     public RSocketResponderHandlerFactory rsocketResponderHandlerFactory(@Autowired LocalReactiveServiceCaller serviceCaller,
                                                                          @Autowired @Qualifier("reactiveCloudEventProcessor") TopicProcessor<CloudEventImpl> eventProcessor) {
         return (setupPayload, requester) -> Mono.fromCallable(() -> new RSocketResponderHandler(serviceCaller, eventProcessor, requester, setupPayload));
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    @ConditionalOnBean(type = "brave.Tracing")
+    public RSocketResponderHandlerFactory rsocketResponderHandlerFactoryWithZipkin(@Autowired LocalReactiveServiceCaller serviceCaller,
+                                                                                   @Autowired @Qualifier("reactiveCloudEventProcessor") TopicProcessor<CloudEventImpl> eventProcessor) {
+        return (setupPayload, requester) -> Mono.fromCallable(() -> {
+            RSocketResponderHandler responderHandler = new RSocketResponderHandler(serviceCaller, eventProcessor, requester, setupPayload);
+            Tracing tracing = applicationContext.getBean(Tracing.class);
+            responderHandler.setTracer(tracing.tracer());
+            return responderHandler;
+        });
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RSocketRequesterSupport.class)
     public RSocketRequesterSupport rsocketRequesterSupport(@Autowired RSocketProperties properties,
                                                            @Autowired Environment environment,
                                                            @Autowired SocketAcceptor socketAcceptor,
@@ -82,13 +129,14 @@ public class RSocketAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(LocalReactiveServiceCaller.class)
     public RSocketServiceAnnotationProcessor rSocketServiceAnnotationProcessor(RSocketProperties rsocketProperties) {
         return new RSocketServiceAnnotationProcessor(rsocketProperties);
     }
 
-    @Bean(initMethod = "init", destroyMethod = "close")
+    @Bean(initMethod = "init")
     public UpstreamManager rsocketUpstreamManager(@Autowired RSocketRequesterSupport rsocketRequesterSupport) throws JwtTokenNotFoundException {
-        UpstreamManager upstreamManager = new UpstreamManagerImpl(rsocketRequesterSupport);
+        UpstreamManager upstreamManager = new SmartLifecycleUpstreamManagerImpl(rsocketRequesterSupport);
         if (properties.getBrokers() != null && !properties.getBrokers().isEmpty()) {
             if (properties.getJwtToken() == null || properties.getJwtToken().isEmpty()) {
                 throw new JwtTokenNotFoundException();
@@ -133,5 +181,24 @@ public class RSocketAutoConfiguration {
     @ConditionalOnMissingBean
     public RSocketServiceHealth rsocketServiceHealth() {
         return new RSocketServiceHealthImpl();
+    }
+
+    @Bean
+    public ApplicationListener<WebServerInitializedEvent> webServerInitializedEventApplicationListener() {
+        return webServerInitializedEvent -> {
+            String namespace = webServerInitializedEvent.getApplicationContext().getServerNamespace();
+            int listenPort = webServerInitializedEvent.getWebServer().getPort();
+            if ("management".equals(namespace)) {
+                this.managementServerPort = listenPort;
+                RSocketAppContext.managementPort = listenPort;
+            } else {
+                this.serverPort = listenPort;
+                RSocketAppContext.webPort = listenPort;
+                if (this.managementServerPort == 0) {
+                    this.managementServerPort = listenPort;
+                    RSocketAppContext.managementPort = listenPort;
+                }
+            }
+        };
     }
 }

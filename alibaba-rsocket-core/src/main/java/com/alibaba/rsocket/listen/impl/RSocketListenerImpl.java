@@ -1,13 +1,13 @@
 package com.alibaba.rsocket.listen.impl;
 
+import com.alibaba.rsocket.RSocketAppContext;
 import com.alibaba.rsocket.listen.RSocketListener;
 import com.alibaba.rsocket.observability.RsocketErrorCode;
 import io.netty.handler.ssl.OpenSsl;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
-import io.rsocket.RSocketFactory;
 import io.rsocket.SocketAcceptor;
-import io.rsocket.frame.decoder.PayloadDecoder;
+import io.rsocket.core.RSocketServer;
 import io.rsocket.plugins.DuplexConnectionInterceptor;
 import io.rsocket.plugins.RSocketInterceptor;
 import io.rsocket.plugins.SocketAcceptorInterceptor;
@@ -25,7 +25,6 @@ import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.*;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
@@ -37,11 +36,9 @@ public class RSocketListenerImpl implements RSocketListener {
     private Logger log = LoggerFactory.getLogger(RSocketListenerImpl.class);
     private Map<Integer, String> schemas = new HashMap<>();
     private String host = "0.0.0.0";
-    public static final String[] protocols = new String[]{"TLSv1.3", "TLSv.1.2"};
-    private Consumer<Throwable> errorConsumer;
+    private static final String[] protocols = new String[]{"TLSv1.3", "TLSv1.2"};
     private Certificate certificate;
     private PrivateKey privateKey;
-    private PayloadDecoder payloadDecoder;
     private SocketAcceptor acceptor;
     private List<RSocketInterceptor> responderInterceptors = new ArrayList<>();
     private List<SocketAcceptorInterceptor> acceptorInterceptors = new ArrayList<>();
@@ -57,20 +54,12 @@ public class RSocketListenerImpl implements RSocketListener {
         this.schemas.put(port, schema);
     }
 
-    public void errorConsumer(Consumer<Throwable> errorConsumer) {
-        this.errorConsumer = errorConsumer;
-    }
-
     public void setCertificate(Certificate certificate) {
         this.certificate = certificate;
     }
 
     public void setPrivateKey(PrivateKey privateKey) {
         this.privateKey = privateKey;
-    }
-
-    public void setPayloadDecoder(PayloadDecoder payloadDecoder) {
-        this.payloadDecoder = payloadDecoder;
     }
 
     public void setAcceptor(SocketAcceptor acceptor) {
@@ -132,42 +121,36 @@ public class RSocketListenerImpl implements RSocketListener {
                 } else {
                     transport = TcpServerTransport.create(host, port);
                 }
-                RSocketFactory.ServerRSocketFactory serverRSocketFactory = RSocketFactory
-                        .receive();
-                //payload decoder
-                if (payloadDecoder != null) {
-                    serverRSocketFactory = serverRSocketFactory.frameDecoder(payloadDecoder);
-                }
+                RSocketServer rsocketServer = RSocketServer.create();
                 //acceptor interceptor
                 for (SocketAcceptorInterceptor acceptorInterceptor : acceptorInterceptors) {
-                    serverRSocketFactory = serverRSocketFactory.addSocketAcceptorPlugin(acceptorInterceptor);
+                    rsocketServer.interceptors(interceptorRegistry -> {
+                        interceptorRegistry.forSocketAcceptor(acceptorInterceptor);
+                    });
                 }
                 //connection interceptor
                 for (DuplexConnectionInterceptor connectionInterceptor : connectionInterceptors) {
-                    serverRSocketFactory = serverRSocketFactory.addConnectionPlugin(connectionInterceptor);
+                    rsocketServer.interceptors(interceptorRegistry -> {
+                        interceptorRegistry.forConnection(connectionInterceptor);
+                    });
+
                 }
                 //responder interceptor
                 for (RSocketInterceptor responderInterceptor : responderInterceptors) {
-                    serverRSocketFactory = serverRSocketFactory.addResponderPlugin(responderInterceptor);
-                }
-                //error consumer
-                if (this.errorConsumer != null) {
-                    serverRSocketFactory = serverRSocketFactory.errorConsumer(errorConsumer);
-                } else {
-                    serverRSocketFactory = serverRSocketFactory.errorConsumer(error -> {
-                        log.error(RsocketErrorCode.message("RST-100500", error.getMessage()), error);
+                    rsocketServer.interceptors(interceptorRegistry -> {
+                        interceptorRegistry.forResponder(responderInterceptor);
                     });
                 }
-                Disposable disposable = serverRSocketFactory
+                Disposable disposable = rsocketServer
                         .acceptor(acceptor)
-                        .transport(transport)
-                        .start()
+                        .bind(transport)
                         .onTerminateDetach()
                         .subscribe();
                 responders.add(disposable);
                 log.info(RsocketErrorCode.message("RST-100001", schema + "://" + host + ":" + port));
             }
             status = 1;
+            RSocketAppContext.rsocketPorts = schemas;
         }
     }
 

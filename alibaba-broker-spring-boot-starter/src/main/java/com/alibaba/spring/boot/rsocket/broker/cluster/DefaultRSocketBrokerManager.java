@@ -1,8 +1,8 @@
 package com.alibaba.spring.boot.rsocket.broker.cluster;
 
 import com.alibaba.rsocket.ServiceLocator;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
 import com.alibaba.rsocket.transport.NetworkUtil;
-import io.cloudevents.v1.CloudEventImpl;
 import io.micrometer.core.instrument.Metrics;
 import org.eclipse.collections.api.block.function.primitive.DoubleFunction;
 import reactor.core.publisher.Flux;
@@ -65,6 +65,11 @@ public class DefaultRSocketBrokerManager implements RSocketBrokerManager {
     }
 
     @Override
+    public String getName() {
+        return "standalone";
+    }
+
+    @Override
     public Boolean isStandAlone() {
         return true;
     }
@@ -87,5 +92,8 @@ public class DefaultRSocketBrokerManager implements RSocketBrokerManager {
         }).collect(Collectors.toList());
     }
 
-
+    @Override
+    public RSocketBroker findConsistentBroker(String clientId) {
+        return this.localBroker;
+    }
 }

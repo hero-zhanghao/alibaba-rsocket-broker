@@ -16,6 +16,7 @@ import org.jetbrains.annotations.Nullable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.net.URI;
 import java.time.Duration;
 
 
@@ -30,8 +31,8 @@ public class RSocketRequesterRpcZipkinProxy extends RSocketRequesterRpcProxy {
     public RSocketRequesterRpcZipkinProxy(@NotNull Tracing tracing, UpstreamCluster upstream,
                                           String group, Class<?> serviceInterface, @Nullable String service, String version,
                                           RSocketMimeType encodingType, @Nullable RSocketMimeType acceptEncodingType,
-                                          Duration timeout, @Nullable String endpoint) {
-        super(upstream, group, serviceInterface, service, version, encodingType, acceptEncodingType, timeout, endpoint);
+                                          Duration timeout, @Nullable String endpoint, boolean sticky, URI sourceUri, boolean jdkProxy) {
+        super(upstream, group, serviceInterface, service, version, encodingType, acceptEncodingType, timeout, endpoint, sticky, sourceUri, jdkProxy);
         tracer = tracing.tracer();
     }
 
@@ -81,6 +82,6 @@ public class RSocketRequesterRpcZipkinProxy extends RSocketRequesterRpcProxy {
     }
 
     public TracingMetadata tracingMetadata(TraceContext traceContext) {
-        return new TracingMetadata(traceContext.traceIdHigh(), traceContext.traceId(), traceContext.spanId(), traceContext.parentId());
+        return new TracingMetadata(traceContext.traceIdHigh(), traceContext.traceId(), traceContext.spanId(), traceContext.parentId(), true, false);
     }
 }

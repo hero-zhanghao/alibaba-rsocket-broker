@@ -3,9 +3,9 @@ package com.alibaba.rsocket.invocation;
 import com.alibaba.rsocket.ServiceLocator;
 import com.alibaba.rsocket.ServiceMapping;
 import com.alibaba.rsocket.metadata.*;
-import com.alibaba.rsocket.reactive.ReactiveAdapter;
 import com.alibaba.rsocket.reactive.ReactiveMethodSupport;
 import com.alibaba.rsocket.utils.MurmurHash3;
+import io.cloudevents.CloudEvent;
 import io.micrometer.core.instrument.Tag;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.CompositeByteBuf;
@@ -18,10 +18,12 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+
+import static com.alibaba.rsocket.constants.ReactiveStreamConstants.REACTIVE_STREAMING_CLASSES;
 
 /**
  * reactive method metadata for service interface
@@ -29,8 +31,7 @@ import java.util.List;
  * @author leijuan
  */
 public class ReactiveMethodMetadata extends ReactiveMethodSupport {
-    public static final List<String> STREAM_CLASSES = Arrays.asList("io.reactivex.Flowable", "io.reactivex.Observable",
-            "io.reactivex.rxjava3.core.Observable", "io.reactivex.rxjava3.core.Flowable", "reactor.core.publisher.Flux");
+
     /**
      * service full name, format as com.alibaba.user.UserService
      */
@@ -63,6 +64,7 @@ public class ReactiveMethodMetadata extends ReactiveMethodSupport {
      * endpoint
      */
     private String endpoint;
+    private boolean sticky;
     /**
      * rsocket frame type
      */
@@ -87,50 +89,52 @@ public class ReactiveMethodMetadata extends ReactiveMethodSupport {
      * metrics tags
      */
     private List<Tag> metricsTags = new ArrayList<>();
-    /**
-     * reactive adapter for RxJava2 & RxJava3 etc
-     */
-    private ReactiveAdapter reactiveAdapter;
-    /**
-     * channel with Mono return type
-     */
     private boolean monoChannel = false;
 
     public ReactiveMethodMetadata(String group, String service, String version,
                                   Method method,
                                   @NotNull RSocketMimeType dataEncodingType,
                                   @NotNull RSocketMimeType[] acceptEncodingTypes,
-                                  @Nullable String endpoint) {
+                                  @Nullable String endpoint, boolean sticky, URI origin) {
         super(method);
         this.service = service;
         this.name = method.getName();
-        this.fullName = this.service + "." + this.name;
-        this.group = group;
-        this.version = version;
-        this.endpoint = endpoint;
+        //param encoding type
+        this.paramEncoding = dataEncodingType;
+        this.acceptEncodingTypes = acceptEncodingTypes;
         //deal with @ServiceMapping for method
         ServiceMapping serviceMapping = method.getAnnotation(ServiceMapping.class);
         if (serviceMapping != null) {
             initServiceMapping(serviceMapping);
         }
-        this.serviceId = MurmurHash3.hash32(ServiceLocator.serviceId(group, service, version));
+        //CloudEvent detection
+        if(inferredClassForReturn.equals(CloudEvent.class)) {
+            this.acceptEncodingTypes = new RSocketMimeType[] {RSocketMimeType.CloudEventsJson};
+        }
+        //RSocketRemoteServiceBuilder has higher priority with group,version,endpoint than @ServiceMapping from RSocketRemoteServiceBuilder
+        this.group = group;
+        this.version = version;
+        this.endpoint = endpoint;
+        // sticky from service builder or @ServiceMapping
+        this.sticky = sticky | this.sticky;
+        this.fullName = this.service + "." + this.name;
+        this.serviceId = MurmurHash3.hash32(ServiceLocator.serviceId(this.group, this.service, this.version));
         this.handlerId = MurmurHash3.hash32(service + "." + name);
-        //param encoding type
-        this.paramEncoding = dataEncodingType;
-        this.acceptEncodingTypes = acceptEncodingTypes;
         //byte buffer binary encoding
         if (paramCount == 1) {
             Class<?> parameterType = method.getParameterTypes()[0];
             if (BINARY_CLASS_LIST.contains(parameterType)) {
                 this.paramEncoding = RSocketMimeType.Binary;
+            }  else if(parameterType.equals(CloudEvent.class)) {
+                this.paramEncoding = RSocketMimeType.CloudEventsJson;
             }
         }
         //init composite metadata for invocation
-        initCompositeMetadata();
+        initCompositeMetadata(origin);
         //bi direction check: param's type is Flux for 1st param or 2nd param
-        if (paramCount == 1 && method.getParameterTypes()[0].equals(Flux.class)) {
+        if (paramCount == 1 && REACTIVE_STREAMING_CLASSES.contains(method.getParameterTypes()[0].getCanonicalName())) {
             rsocketFrameType = FrameType.REQUEST_CHANNEL;
-        } else if (paramCount == 2 && method.getParameterTypes()[1].equals(Flux.class)) {
+        } else if (paramCount == 2 && REACTIVE_STREAMING_CLASSES.contains(method.getParameterTypes()[1].getCanonicalName())) {
             rsocketFrameType = FrameType.REQUEST_CHANNEL;
         }
         if (rsocketFrameType != null && rsocketFrameType == FrameType.REQUEST_CHANNEL) {
@@ -143,14 +147,12 @@ public class ReactiveMethodMetadata extends ReactiveMethodSupport {
             // fire_and_forget
             if (returnType.equals(Void.TYPE) || (returnType.equals(Mono.class) && inferredClassForReturn.equals(Void.TYPE))) {
                 this.rsocketFrameType = FrameType.REQUEST_FNF;
-            } else if (returnType.equals(Flux.class) || STREAM_CLASSES.contains(returnType.getCanonicalName())) {  // request/stream
+            } else if (returnType.equals(Flux.class) || REACTIVE_STREAMING_CLASSES.contains(returnType.getCanonicalName())) {  // request/stream
                 this.rsocketFrameType = FrameType.REQUEST_STREAM;
             } else { //request/response
                 this.rsocketFrameType = FrameType.REQUEST_RESPONSE;
             }
         }
-        //reactive adapter for return type
-        this.reactiveAdapter = ReactiveAdapter.findAdapter(returnType.getCanonicalName());
         //metrics tags for micrometer
         if (this.group != null && !this.group.isEmpty()) {
             metricsTags.add(Tag.of("group", this.group));
@@ -187,22 +189,29 @@ public class ReactiveMethodMetadata extends ReactiveMethodSupport {
         if (!serviceMapping.resultEncoding().isEmpty()) {
             this.acceptEncodingTypes = new RSocketMimeType[]{RSocketMimeType.valueOfType(serviceMapping.resultEncoding())};
         }
+        this.sticky = serviceMapping.sticky();
     }
 
-    public void initCompositeMetadata() {
+    public void initCompositeMetadata(URI origin) {
         //payload routing metadata
         GSVRoutingMetadata routingMetadata = new GSVRoutingMetadata(group, this.service, this.name, version);
         routingMetadata.setEndpoint(this.endpoint);
+        routingMetadata.setSticky(this.sticky);
         //payload binary routing metadata
         BinaryRoutingMetadata binaryRoutingMetadata = new BinaryRoutingMetadata(this.serviceId, this.handlerId,
                 routingMetadata.assembleRoutingKey().getBytes(StandardCharsets.UTF_8));
+        if (this.sticky) {
+            binaryRoutingMetadata.setSticky(true);
+        }
         //add param encoding
         MessageMimeTypeMetadata messageMimeTypeMetadata = new MessageMimeTypeMetadata(this.paramEncoding);
         //set accepted mimetype
         MessageAcceptMimeTypesMetadata messageAcceptMimeTypesMetadata = new MessageAcceptMimeTypesMetadata(this.acceptEncodingTypes);
+        //origin metadata
+        OriginMetadata originMetadata = new OriginMetadata(origin);
         //construct default composite metadata
         CompositeByteBuf compositeMetadataContent;
-        this.compositeMetadata = RSocketCompositeMetadata.from(routingMetadata, messageMimeTypeMetadata, messageAcceptMimeTypesMetadata);
+        this.compositeMetadata = RSocketCompositeMetadata.from(routingMetadata, messageMimeTypeMetadata, messageAcceptMimeTypesMetadata, originMetadata);
         //add gsv routing data if endpoint not empty
         if (endpoint != null && !endpoint.isEmpty()) {
             this.compositeMetadata.addMetadata(binaryRoutingMetadata);
@@ -229,10 +238,6 @@ public class ReactiveMethodMetadata extends ReactiveMethodSupport {
         this.service = service;
     }
 
-    public ReactiveAdapter getReactiveAdapter() {
-        return reactiveAdapter;
-    }
-
     public String getName() {
         return name;
     }
@@ -249,25 +254,12 @@ public class ReactiveMethodMetadata extends ReactiveMethodSupport {
         return monoChannel;
     }
 
-    public Class<?> getInferredClassForReturn() {
-        return inferredClassForReturn;
-    }
-
-
     public RSocketMimeType getParamEncoding() {
         return paramEncoding;
     }
 
-    public void setParamEncoding(RSocketMimeType paramEncoding) {
-        this.paramEncoding = paramEncoding;
-    }
-
     public RSocketMimeType[] getAcceptEncodingTypes() {
         return acceptEncodingTypes;
-    }
-
-    public void setAcceptEncodingTypes(RSocketMimeType[] acceptEncodingTypes) {
-        this.acceptEncodingTypes = acceptEncodingTypes;
     }
 
     public RSocketCompositeMetadata getCompositeMetadata() {

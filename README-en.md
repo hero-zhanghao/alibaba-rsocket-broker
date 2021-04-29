@@ -1,11 +1,22 @@
-Alibaba RSocket Broker
-======================
-[![Maven](https://img.shields.io/maven-central/v/com.alibaba.rsocket/alibaba-rsocket-spring-boot-starter)](https://repo1.maven.org/maven2/com/alibaba/rsocket/)
-[!["Open Issues"](https://img.shields.io/github/issues-raw/alibaba/alibaba-rsocket-broker.svg)](https://github.com/alibaba/alibaba-rsocket-broker/issues)
-[![Build Status](https://api.travis-ci.com/alibaba/alibaba-rsocket-broker.svg?branch=master)](https://travis-ci.com/alibaba/alibaba-rsocket-broker)
-[![Apache License 2](https://img.shields.io/badge/license-ASF2-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0.txt)
-&nbsp;&nbsp;&nbsp;&nbsp;
-[![Chinese README](https://img.shields.io/badge/CN-README-brightgreen)](https://github.com/alibaba/alibaba-rsocket-broker/blob/master/README.md)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/wiki/alibaba/alibaba-rsocket-broker/img/logo.png" alt="logo" width="30%"/>
+</p>
+<p align="center">
+  <a href="https://gitter.im/alibaba-rsocket-broker/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge">
+    <img alt="Gitter" src="https://badges.gitter.im/alibaba-rsocket-broker/community.svg"></a>
+  <a href="https://repo1.maven.org/maven2/com/alibaba/rsocket/">
+    <img alt="Maven" src="https://img.shields.io/maven-central/v/com.alibaba.rsocket/alibaba-rsocket-spring-boot-starter"></a>
+  <a href="https://github.com/alibaba/alibaba-rsocket-broker">
+    <img alt="GitHub repo size" src="https://img.shields.io/github/repo-size/alibaba/alibaba-rsocket-broker"></a>
+  <a href="https://github.com/alibaba/alibaba-rsocket-broker/issues">
+    <img alt = "Open Issues" src="https://img.shields.io/github/issues-raw/alibaba/alibaba-rsocket-broker.svg"></a>
+  <a href="https://travis-ci.com/alibaba/alibaba-rsocket-broker">
+    <img alt = "Build Status" src="https://api.travis-ci.com/alibaba/alibaba-rsocket-broker.svg?branch=master"></a>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0.txt">
+    <img alt = "Apache License 2" src="https://img.shields.io/badge/license-ASF2-blue.svg"></a>
+  <a href="https://github.com/alibaba/alibaba-rsocket-broker/blob/master/README-en.md">
+    <img src="https://img.shields.io/badge/EN-README-brightgreen"></a>
+</p>
 
 
 Alibaba RSocket Broker is a communication system between broad range of applications using RSocket protocol. RSocket is an application protocol that carries the reactive semantics. 
@@ -16,7 +27,13 @@ The design highlights of the broker are:
 * Message driven
 * Zero copy: Fast routing 
 
-For more information on the use cases of Alibaba RSocket broker, please visit [here](http://rsocketbyexample.info).
+For more information on the use cases of Alibaba RSocket broker, please visit following links:
+
+* Alibaba RSocket Broker Wiki https://github.com/alibaba/alibaba-rsocket-broker/wiki
+* Alibaba RSocket Broker Examples: https://github.com/alibaba-rsocket-broker/
+* RSocket by Example: http://rsocketbyexample.info
+* Github Discussions: https://github.com/alibaba/alibaba-rsocket-broker/discussions
+
 
 
 ## Under the hood

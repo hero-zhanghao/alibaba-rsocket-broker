@@ -27,6 +27,13 @@ public @interface RSocketService {
     String name() default "";
 
     /**
+     * service group
+     *
+     * @return group
+     */
+    String group() default "";
+
+    /**
      * service version
      *
      * @return version
@@ -41,9 +48,9 @@ public @interface RSocketService {
     String[] encoding() default {"hessian", "json", "protobuf"};
 
     /**
-     * service labels
+     * service tags
      *
      * @return labels
      */
-    String[] labels() default {};
+    String[] tags() default {};
 }

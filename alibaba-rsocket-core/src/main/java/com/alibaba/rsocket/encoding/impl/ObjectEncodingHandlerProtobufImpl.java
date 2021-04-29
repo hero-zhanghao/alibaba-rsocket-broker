@@ -8,10 +8,7 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.google.protobuf.GeneratedMessageV3;
 import com.google.protobuf.MessageLite;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufInputStream;
-import io.netty.buffer.ByteBufOutputStream;
-import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.buffer.*;
 import io.netty.util.ReferenceCountUtil;
 import io.protostuff.LinkedBuffer;
 import io.protostuff.ProtostuffIOUtil;
@@ -33,6 +30,16 @@ public class ObjectEncodingHandlerProtobufImpl implements ObjectEncodingHandler 
     LoadingCache<Class<?>, Method> parseFromMethodStore = Caffeine.newBuilder()
             .maximumSize(Integer.MAX_VALUE)
             .build(targetClass -> targetClass.getMethod("parseFrom", ByteBuffer.class));
+    private boolean ktProtoBuf;
+
+    public ObjectEncodingHandlerProtobufImpl() {
+        try {
+            Class.forName("kotlinx.serialization.protobuf.ProtoBuf");
+            ktProtoBuf = true;
+        } catch (Exception e) {
+            ktProtoBuf = false;
+        }
+    }
 
     @NotNull
     @Override
@@ -66,6 +73,8 @@ public class ObjectEncodingHandlerProtobufImpl implements ObjectEncodingHandler 
                 ByteBufOutputStream bos = new ByteBufOutputStream(byteBuf);
                 if (result instanceof MessageLite) {
                     ((MessageLite) result).writeTo(bos);
+                } else if (ktProtoBuf && KotlinSerializerSupport.isKotlinSerializable(result.getClass())) {
+                    return Unpooled.wrappedBuffer(KotlinSerializerSupport.encodeAsProtobuf(result));
                 } else {
                     LinkedBuffer buffer = LinkedBuffer.allocate(256);
                     Schema schema = RuntimeSchema.getSchema(result.getClass());
@@ -85,11 +94,15 @@ public class ObjectEncodingHandlerProtobufImpl implements ObjectEncodingHandler 
     public Object decodeResult(ByteBuf data, @Nullable Class<?> targetClass) throws EncodingException {
         if (data.readableBytes() > 0 && targetClass != null) {
             try {
-                if (targetClass.getSuperclass() != null && targetClass.getSuperclass().equals(GeneratedMessageV3.class)) {
+                if (GeneratedMessageV3.class.isAssignableFrom(targetClass)) {
                     Method method = parseFromMethodStore.get(targetClass);
                     if (method != null) {
                         return method.invoke(null, data.nioBuffer());
                     }
+                } else if (ktProtoBuf && KotlinSerializerSupport.isKotlinSerializable(targetClass)) {
+                    byte[] bytes = new byte[data.readableBytes()];
+                    data.readBytes(bytes);
+                    return KotlinSerializerSupport.decodeFromProtobuf(bytes, targetClass);
                 } else {
                     Schema schema = RuntimeSchema.getSchema(targetClass);
                     Object object = schema.newMessage();
@@ -102,4 +115,5 @@ public class ObjectEncodingHandlerProtobufImpl implements ObjectEncodingHandler 
         }
         return null;
     }
+
 }

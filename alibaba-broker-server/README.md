@@ -2,6 +2,16 @@ Alibaba RSocket Broker Server
 =============================
 RSocket Broker Server，主要包括RSocket Broker的核心功能和图形化控制台。
 
+### JDK 要求
+
+* Alibaba RSocket Broker兼容Java 8, 11、15和最新的16。 如果你使用Java 11、15和16，在运行时添加以下JVM参数。
+
+```
+ --illegal-access=permit -Dio.netty.tryReflectionSetAccessible=true --add-opens java.base/jdk.internal.misc=ALL-UNNAMED
+```
+
+如果Maven编译问题，请添加`MAVEN_OPTS=--illegal-access=permit` 和 JVM参数 `--illegal-access=permit` 然后进行编译。 
+
 ### 日常开发和测试
 
 如果用于日常开发和测试，如果你已经使用Docker的话，你只需要创建一个对应的docker-compose.yml然后启动即可。
@@ -10,7 +20,7 @@ RSocket Broker Server，主要包括RSocket Broker的核心功能和图形化控
 version: "3"
 services:
   alibaba-rsocket-broker:
-    image: linuxchina/alibaba-rsocket-broker:1.0.0.M1
+    image: linuxchina/alibaba-rsocket-broker:1.0.1
     ports:
       - "9997:9997"
       - "9998:9998"
@@ -18,6 +28,7 @@ services:
 ```
 
 RSocket Broker的控制台地址为 http://localhost:9998/
+
 
 ### UI
 RSocket Broker控制台默认采用Vaadin 14编写，主要是基于以下考虑：
@@ -81,6 +92,8 @@ $ openssl rsa -in jwt_private_key.pem -pubout -outform DER -out jwt_rsa.pub
 
 如果你想自行控制JWT Token的生成，请参考 AuthenticationServiceJwtImpl 为应用生成token。
 
+**注意:** 如果你使用Docker制作RSocket Broker镜像，如果是内部使用的话，你可以将jwt_rsa.pub合并到镜像也是可以的。
+
 ### TLS通讯加密
 RSocket Broker 默认是不开启TLS的，如果你需要启动TLS，则需要为RSocket Broker生成一个key store文件，如下：
 
@@ -95,7 +108,7 @@ $ cp rsocket.p12 ~/.rsocket/
 rsocket.broker.ssl.enable=true
 ```
 
-### Gossip设置
+### Gossip广播设置和监听端口号42254
 RSocket broker默认是开发者模式，也就是单机运行模式，如果你要开启基于Gossip广播的集群模式，请进行如下配置。
 
 ```
@@ -138,6 +151,36 @@ rsocket.broker.external-domain=broker1.rsocket.foobar.com
 rsocket.brokers=tcp://broker1.rsocket.foobar.com:9999,tcp://broker2.rsocket.foobar.com:9999
 rsocket.topology=internet
 ```
+
+处于安全的考虑，可以使用WebSocket代理方式进行,如Nginx 或者 [Babl](https://github.com/babl-ws/babl), 然后转发到RSocket Broker集群。
+
+# 监听端口号
+对于一个RSocket Broker集群来说，通常都会涉及到两个端口号，一个是接受请求端口号，在RSocket
+Broker集群中为9999，另外一个是集群管理端口号，也就是集群内部服务器节点之间相互通讯的端口号,
+RSocket的Gossip管理方式中，该端口号为42254，确保各个节点之间的gossip通讯。整体如下：
+
+* tcp request port: 9999，负责接收RSocket请求
+* cluster gossip port: 42254，完成集群内部服务器间的Gossip通讯
+* Spring Boot management server port: 9997, Spring Boot的actuator端口号
+* http web request port: 9998，通过该Web监听端口号，可以以REST API方式访问RSocket服务，同时是Broker集群的Web管理控制台。
+
+如果你还要开启RSocket Broker的WebSocket端口监听，如为浏览器提供对应的接入，你只需要添加如下bean即可：
+
+```
+  @Bean
+  public RSocketListenerCustomizer websocketListenerCustomizer() {
+        return builder -> {
+            builder.listen("ws", 19999);
+        };
+    }
+```
+
+### Kubernetes部署
+
+* K8S准备工作: 主要是创建rsocket命名空间，同时为Spring-Cloud-Kubernetes访问K8S集群设置对应的权限 `kubectl apply -f alibaba-broker-server/src/main/k8s/setup.yml`
+* 执行编译： mvn -Pk8s -DskipTests clean package
+* K8S部署rsocket broker:  `kubectl apply --namespace=rsocket -f alibaba-broker-server/src/main/k8s/deployment.yml `
+* 应用接入： application.properties中添加 `rsocket.brokers=tcp://rsocket-broker.rsocket.svc.cluster.local:9999`
 
 ### Vaadin Flow
 Alibaba RSocket Broker的Web控制台使用Vaadin 14开发，为了方便你扩展界面，将Vaadin的开发资源列一下，方便二次开发。

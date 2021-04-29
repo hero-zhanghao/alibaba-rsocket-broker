@@ -13,6 +13,7 @@ import java.util.stream.Stream;
  *
  * @author leijuan
  */
+@SuppressWarnings({"unchecked", "rawtypes"})
 public class ReactiveAdapterDefault implements ReactiveAdapter {
     private static ReactiveAdapterDefault instance = new ReactiveAdapterDefault();
 
@@ -57,5 +58,10 @@ public class ReactiveAdapterDefault implements ReactiveAdapter {
     @Override
     public Object fromPublisher(Flux<?> flux, Class<?> returnType, MutableContext mutableContext) {
         return flux.subscriberContext(mutableContext::putAll);
+    }
+
+    @Override
+    public Object fromPublisher(Flux<?> flux, Class<?> returnType) {
+        return flux;
     }
 }

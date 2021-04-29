@@ -2,6 +2,7 @@ package com.alibaba.spring.boot.rsocket.broker.responder;
 
 import com.alibaba.rsocket.RSocketExchange;
 import com.alibaba.rsocket.ServiceLocator;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
 import com.alibaba.rsocket.cloudevents.CloudEventRSocket;
 import com.alibaba.rsocket.cloudevents.EventReply;
 import com.alibaba.rsocket.events.AppStatusEvent;
@@ -13,9 +14,6 @@ import com.alibaba.rsocket.rpc.LocalReactiveServiceCaller;
 import com.alibaba.spring.boot.rsocket.broker.route.ServiceMeshInspector;
 import com.alibaba.spring.boot.rsocket.broker.route.ServiceRoutingSelector;
 import com.alibaba.spring.boot.rsocket.broker.security.RSocketAppPrincipal;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import io.cloudevents.json.Json;
-import io.cloudevents.v1.CloudEventImpl;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Tag;
 import io.netty.buffer.ByteBuf;
@@ -24,9 +22,9 @@ import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.util.ReferenceCountUtil;
 import io.rsocket.ConnectionSetupPayload;
+import io.rsocket.DuplexConnection;
 import io.rsocket.Payload;
 import io.rsocket.RSocket;
-import io.rsocket.ResponderRSocket;
 import io.rsocket.exceptions.ApplicationErrorException;
 import io.rsocket.exceptions.InvalidException;
 import io.rsocket.frame.FrameType;
@@ -37,11 +35,15 @@ import org.jetbrains.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.util.ReflectionUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
-import reactor.extra.processor.TopicProcessor;
 
+import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -52,7 +54,7 @@ import java.util.*;
  * @author leijuan
  */
 @SuppressWarnings({"Duplicates", "rawtypes"})
-public class RSocketBrokerResponderHandler extends RSocketResponderSupport implements ResponderRSocket, CloudEventRSocket {
+public class RSocketBrokerResponderHandler extends RSocketResponderSupport implements CloudEventRSocket {
     private static Logger log = LoggerFactory.getLogger(RSocketBrokerResponderHandler.class);
     /**
      * binary routing mark
@@ -91,6 +93,10 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
      */
     private Set<ServiceLocator> peerServices;
     /**
+     * sticky services, value is rsocket handler id
+     */
+    private Map<Integer, Integer> stickyServices = new HashMap<>();
+    /**
      * consumed service
      */
     private Set<String> consumedServices = new HashSet<>();
@@ -98,6 +104,8 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
      * peer RSocket: sending or requester RSocket
      */
     private RSocket peerRsocket;
+    @Nullable
+    private RSocket upstreamRSocket;
     /**
      * app status: 0:connect, 1: serving, 2: not serving  -1: stopped
      */
@@ -112,11 +120,15 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     /**
      * reactive event processor
      */
-    private TopicProcessor<CloudEventImpl> eventProcessor;
+    private Sinks.Many<CloudEventImpl> eventProcessor;
     /**
      * UUID from requester side
      */
     private String uuid;
+    /**
+     * remote requester ip
+     */
+    private String remoteIp;
     /**
      * app instance id
      */
@@ -128,10 +140,12 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
                                          @NotNull RSocketAppPrincipal principal,
                                          RSocket peerRsocket,
                                          ServiceRoutingSelector routingSelector,
-                                         TopicProcessor<CloudEventImpl> eventProcessor,
+                                         Sinks.Many<CloudEventImpl> eventProcessor,
                                          RSocketBrokerHandlerRegistry handlerRegistry,
-                                         ServiceMeshInspector serviceMeshInspector) {
+                                         ServiceMeshInspector serviceMeshInspector,
+                                         @Nullable RSocket upstreamRSocket) {
         try {
+            this.upstreamRSocket = upstreamRSocket;
             RSocketMimeType dataType = RSocketMimeType.valueOfType(setupPayload.dataMimeType());
             if (dataType != null) {
                 this.defaultMessageMimeType = new MessageMimeTypeMetadata(dataType);
@@ -141,14 +155,14 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
             this.id = appMetadata.getId();
             this.uuid = appMetadata.getUuid();
             //app tags hashcode set
-            this.appTagsHashCodeSet.add(("id=" + this.id).hashCode());
-            this.appTagsHashCodeSet.add(("uuid=" + this.uuid).hashCode());
+            this.appTagsHashCodeSet.add(("id:" + this.id).hashCode());
+            this.appTagsHashCodeSet.add(("uuid:" + this.uuid).hashCode());
             if (appMetadata.getIp() != null && !appMetadata.getIp().isEmpty()) {
-                this.appTagsHashCodeSet.add(("ip=" + this.appMetadata.getIp()).hashCode());
+                this.appTagsHashCodeSet.add(("ip:" + this.appMetadata.getIp()).hashCode());
             }
             if (appMetadata.getMetadata() != null) {
                 for (Map.Entry<String, String> entry : appMetadata.getMetadata().entrySet()) {
-                    this.appTagsHashCodeSet.add((entry.getKey() + "=" + entry.getValue()).hashCode());
+                    this.appTagsHashCodeSet.add((entry.getKey() + ":" + entry.getValue()).hashCode());
                 }
             }
             this.principal = principal;
@@ -165,6 +179,8 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
                     registerPublishedServices();
                 }
             }
+            //remote ip
+            this.remoteIp = getRemoteAddress(peerRsocket);
             //new comboOnClose
             this.comboOnClose = Mono.first(super.onClose(), peerRsocket.onClose());
             this.comboOnClose.doOnTerminate(this::unRegisterPublishedServices).subscribeOn(Schedulers.parallel()).subscribe();
@@ -181,12 +197,21 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
         return id;
     }
 
+    @Nullable
+    public String getRemoteIp() {
+        return remoteIp;
+    }
+
     public AppMetadata getAppMetadata() {
         return appMetadata;
     }
 
     public Set<String> getConsumedServices() {
         return consumedServices;
+    }
+
+    public Set<Integer> getAppTagsHashCodeSet() {
+        return appTagsHashCodeSet;
     }
 
     public Integer getAppStatus() {
@@ -206,6 +231,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     }
 
     @Override
+    @NotNull
     public Mono<Payload> requestResponse(Payload payload) {
         BinaryRoutingMetadata binaryRoutingMetadata = binaryRoutingMetadata(payload.metadata());
         GSVRoutingMetadata gsvRoutingMetadata;
@@ -229,7 +255,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
             return localRequestResponse(gsvRoutingMetadata, defaultMessageMimeType, null, payload);
         }
         //request filters
-        Mono<RSocket> destination = findDestination(gsvRoutingMetadata);
+        Mono<RSocket> destination = findDestination(binaryRoutingMetadata, gsvRoutingMetadata);
         if (this.filterChain.isFiltersPresent()) {
             RSocketExchange exchange = new RSocketExchange(FrameType.REQUEST_RESPONSE, gsvRoutingMetadata, payload, this.appMetadata);
             destination = filterChain.filter(exchange).then(destination);
@@ -238,7 +264,6 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
         return destination.flatMap(rsocket -> {
             recordServiceInvoke(principal.getName(), gsvRoutingMetadata.gsv());
             metrics(gsvRoutingMetadata, "0x05");
-            //todo timeout process
             if (encodingMetadataIncluded) {
                 return rsocket.requestResponse(payload);
             } else {
@@ -248,6 +273,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     }
 
     @Override
+    @NotNull
     public Mono<Void> fireAndForget(Payload payload) {
         BinaryRoutingMetadata binaryRoutingMetadata = binaryRoutingMetadata(payload.metadata());
         GSVRoutingMetadata gsvRoutingMetadata;
@@ -270,7 +296,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
             return localFireAndForget(gsvRoutingMetadata, defaultMessageMimeType, payload);
         }
         //request filters
-        Mono<RSocket> destination = findDestination(gsvRoutingMetadata);
+        Mono<RSocket> destination = findDestination(binaryRoutingMetadata, gsvRoutingMetadata);
         if (this.filterChain.isFiltersPresent()) {
             RSocketExchange exchange = new RSocketExchange(FrameType.REQUEST_FNF, gsvRoutingMetadata, payload, this.appMetadata);
             destination = filterChain.filter(exchange).then(destination);
@@ -292,7 +318,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     public Mono<Void> fireCloudEvent(CloudEventImpl<?> cloudEvent) {
         //要进行event的安全验证，不合法来源的event进行消费，后续还好进行event判断
         if (uuid.equalsIgnoreCase(cloudEvent.getAttributes().getSource().getHost())) {
-            return Mono.fromRunnable(() -> eventProcessor.onNext(cloudEvent));
+            return Mono.fromRunnable(() -> eventProcessor.tryEmitNext(cloudEvent));
         }
         return Mono.empty();
     }
@@ -303,6 +329,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     }
 
     @Override
+    @NotNull
     public Flux<Payload> requestStream(Payload payload) {
         BinaryRoutingMetadata binaryRoutingMetadata = binaryRoutingMetadata(payload.metadata());
         GSVRoutingMetadata gsvRoutingMetadata;
@@ -325,7 +352,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
         if (localServiceCaller.contains(serviceId)) {
             return localRequestStream(gsvRoutingMetadata, defaultMessageMimeType, null, payload);
         }
-        Mono<RSocket> destination = findDestination(gsvRoutingMetadata);
+        Mono<RSocket> destination = findDestination(binaryRoutingMetadata, gsvRoutingMetadata);
         if (this.filterChain.isFiltersPresent()) {
             RSocketExchange requestContext = new RSocketExchange(FrameType.REQUEST_STREAM, gsvRoutingMetadata, payload, this.appMetadata);
             destination = filterChain.filter(requestContext).then(destination);
@@ -341,8 +368,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
         });
     }
 
-    @Override
-    public Flux<Payload> requestChannel(Payload signal, Publisher<Payload> payloads) {
+    public Flux<Payload> requestChannel(Payload signal, Flux<Payload> payloads) {
         BinaryRoutingMetadata binaryRoutingMetadata = binaryRoutingMetadata(signal.metadata());
         GSVRoutingMetadata gsvRoutingMetadata;
         if (binaryRoutingMetadata != null) {
@@ -354,7 +380,7 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
                 return Flux.error(new InvalidException(RsocketErrorCode.message("RST-600404")));
             }
         }
-        Mono<RSocket> destination = findDestination(gsvRoutingMetadata);
+        Mono<RSocket> destination = findDestination(binaryRoutingMetadata, gsvRoutingMetadata);
         return destination.flatMapMany(rsocket -> {
             recordServiceInvoke(principal.getName(), gsvRoutingMetadata.gsv());
             metrics(gsvRoutingMetadata, "0x07");
@@ -363,11 +389,25 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     }
 
     @Override
-    public Mono<Void> metadataPush(Payload payload) {
+    @NotNull
+    public Flux<Payload> requestChannel(@NotNull Publisher<Payload> payloads) {
+        if (payloads instanceof Flux) {
+            Flux<Payload> payloadsWithSignalRouting = (Flux<Payload>) payloads;
+            //noinspection ConstantConditions
+            return payloadsWithSignalRouting.switchOnFirst((signal, flux) -> requestChannel(signal.get(), flux));
+        }
+        return Flux.error(new InvalidException(RsocketErrorCode.message("RST-201400")));
+    }
+
+    @Override
+    @NotNull
+    public Mono<Void> metadataPush(@NotNull Payload payload) {
         try {
             if (payload.metadata().readableBytes() > 0) {
-                CloudEventImpl<ObjectNode> cloudEvent = Json.decodeValue(payload.getMetadataUtf8(), CLOUD_EVENT_TYPE_REFERENCE);
-                return fireCloudEvent(cloudEvent);
+                CloudEventImpl<?> cloudEvent = extractCloudEventsFromMetadataPush(payload);
+                if (cloudEvent != null) {
+                    return fireCloudEvent(cloudEvent);
+                }
             }
         } catch (Exception e) {
             log.error(RsocketErrorCode.message("RST-610500", e.getMessage()), e);
@@ -382,17 +422,36 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     }
 
     public void registerPublishedServices() {
-        if (!AppStatusEvent.STATUS_SERVING.equals(this.appStatus)) {
-            if (this.peerServices != null && !this.peerServices.isEmpty()) {
-                routingSelector.register(appMetadata.getId(), appMetadata.getPowerRating(), peerServices);
+        if (this.peerServices != null && !this.peerServices.isEmpty()) {
+            Set<Integer> services = routingSelector.findServicesByInstance(appMetadata.getId());
+            if (services.isEmpty()) {
+                this.routingSelector.register(appMetadata.getId(), appMetadata.getPowerRating(), peerServices);
+                this.appStatus = AppStatusEvent.STATUS_SERVING;
             }
-            this.appStatus = AppStatusEvent.STATUS_SERVING;
         }
+    }
+
+    public void registerServices(Set<ServiceLocator> services) {
+        if (this.peerServices == null || this.peerServices.isEmpty()) {
+            this.peerServices = services;
+        } else {
+            this.peerServices.addAll(services);
+        }
+        this.routingSelector.register(appMetadata.getId(), appMetadata.getPowerRating(), services);
     }
 
     public void unRegisterPublishedServices() {
         routingSelector.deregister(appMetadata.getId());
         this.appStatus = AppStatusEvent.STATUS_OUT_OF_SERVICE;
+    }
+
+    public void unRegisterServices(Set<ServiceLocator> services) {
+        if (this.peerServices != null && !this.peerServices.isEmpty()) {
+            this.peerServices.removeAll(services);
+        }
+        for (ServiceLocator service : services) {
+            this.routingSelector.deregister(appMetadata.getId(), service.getId());
+        }
     }
 
     public Set<ServiceLocator> getPeerServices() {
@@ -458,26 +517,40 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
         return buf;
     }
 
-    private Mono<RSocket> findDestination(GSVRoutingMetadata routingMetaData) {
+    private Mono<RSocket> findDestination(@Nullable BinaryRoutingMetadata binaryRoutingMetadata, GSVRoutingMetadata routingMetaData) {
         return Mono.create(sink -> {
             String gsv = routingMetaData.gsv();
             Integer serviceId = routingMetaData.id();
-            Integer targetHandlerId;
             RSocket rsocket = null;
             Exception error = null;
-            if (routingMetaData.getEndpoint() != null && !routingMetaData.getEndpoint().isEmpty()) {
-                targetHandlerId = findDestinationWithEndpoint(routingMetaData.getEndpoint(), serviceId);
-                if (targetHandlerId == null) {
-                    error = new InvalidException(RsocketErrorCode.message("RST-900405", gsv, routingMetaData.getEndpoint()));
-                }
+            //sticky session handler
+            boolean sticky = binaryRoutingMetadata != null ? binaryRoutingMetadata.isSticky() : routingMetaData.isSticky();
+            RSocketBrokerResponderHandler targetHandler = findStickyHandler(sticky, serviceId);
+            // handler from sticky services
+            if (targetHandler != null) {
+                rsocket = targetHandler.peerRsocket;
             } else {
-                targetHandlerId = routingSelector.findHandler(serviceId);
-            }
-            if (targetHandlerId != null) {
-                RSocketBrokerResponderHandler targetHandler = handlerRegistry.findById(targetHandlerId);
+                String endpoint = routingMetaData.getEndpoint();
+                if (endpoint != null && !endpoint.isEmpty()) {
+                    targetHandler = findDestinationWithEndpoint(endpoint, serviceId);
+                    if (targetHandler == null) {
+                        error = new InvalidException(RsocketErrorCode.message("RST-900405", gsv, endpoint));
+                    }
+                } else {
+                    Integer targetHandlerId = routingSelector.findHandler(serviceId);
+                    if (targetHandlerId != null) {
+                        targetHandler = handlerRegistry.findById(targetHandlerId);
+                    } else {
+                        error = new InvalidException(RsocketErrorCode.message("RST-900404", gsv));
+                    }
+                }
                 if (targetHandler != null) {
                     if (serviceMeshInspector.isRequestAllowed(this.principal, gsv, targetHandler.principal)) {
                         rsocket = targetHandler.peerRsocket;
+                        //save handler id if sticky
+                        if (sticky) {
+                            this.stickyServices.put(serviceId, targetHandler.getId());
+                        }
                     } else {
                         error = new ApplicationErrorException(RsocketErrorCode.message("RST-900401", gsv));
                     }
@@ -486,7 +559,11 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
             if (rsocket != null) {
                 sink.success(rsocket);
             } else if (error != null) {
-                sink.error(error);
+                if (upstreamRSocket != null && error instanceof InvalidException) {
+                    sink.success(upstreamRSocket);
+                } else {
+                    sink.error(error);
+                }
             } else {
                 sink.error(new ApplicationErrorException(RsocketErrorCode.message("RST-900404", gsv)));
             }
@@ -494,13 +571,16 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     }
 
     @Nullable
-    private Integer findDestinationWithEndpoint(String endpoint, Integer serviceId) {
+    private RSocketBrokerResponderHandler findDestinationWithEndpoint(String endpoint, Integer serviceId) {
+        if (endpoint.startsWith("id:")) {
+            return handlerRegistry.findByUUID(endpoint.substring(3));
+        }
         int endpointHashCode = endpoint.hashCode();
         for (Integer handlerId : routingSelector.findHandlers(serviceId)) {
             RSocketBrokerResponderHandler handler = handlerRegistry.findById(handlerId);
             if (handler != null) {
                 if (handler.appTagsHashCodeSet.contains(endpointHashCode)) {
-                    return handlerId;
+                    return handler;
                 }
             }
         }
@@ -508,11 +588,11 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
     }
 
     @Override
-    public Mono<Void> onClose() {
+    public @NotNull Mono<Void> onClose() {
         return this.comboOnClose;
     }
 
-    private static void metrics(GSVRoutingMetadata routingMetadata, String frameType) {
+    public static void metrics(GSVRoutingMetadata routingMetadata, String frameType) {
         List<Tag> tags = new ArrayList<>();
         if (routingMetadata.getGroup() != null && !routingMetadata.getGroup().isEmpty()) {
             tags.add(Tag.of("group", routingMetadata.getGroup()));
@@ -537,8 +617,34 @@ public class RSocketBrokerResponderHandler extends RSocketResponderSupport imple
         return null;
     }
 
+    @Nullable
+    protected RSocketBrokerResponderHandler findStickyHandler(boolean sticky, Integer serviceId) {
+        // todo 算法更新，如一致性hash算法，或者取余操作
+        if (sticky && stickyServices.containsKey(serviceId)) {
+            return handlerRegistry.findById(stickyServices.get(serviceId));
+        }
+        return null;
+    }
+
     public void clean() {
         ReferenceCountUtil.release(this.defaultEncodingBytebuf);
     }
 
+    private String getRemoteAddress(RSocket requesterSocket) {
+        try {
+            Field connectionField = ReflectionUtils.findField(requesterSocket.getClass(), "connection");
+            if (connectionField != null) {
+                DuplexConnection connection = (DuplexConnection) ReflectionUtils.getField(connectionField, requesterSocket);
+                if (connection != null) {
+                    SocketAddress remoteAddress = connection.remoteAddress();
+                    if (remoteAddress instanceof InetSocketAddress) {
+                        return ((InetSocketAddress) remoteAddress).getHostName();
+                    }
+                }
+            }
+        } catch (Exception ignore) {
+
+        }
+        return null;
+    }
 }

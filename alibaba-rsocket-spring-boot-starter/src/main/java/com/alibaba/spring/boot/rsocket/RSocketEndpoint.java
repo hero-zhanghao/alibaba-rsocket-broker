@@ -3,14 +3,17 @@ package com.alibaba.spring.boot.rsocket;
 import com.alibaba.rsocket.RSocketAppContext;
 import com.alibaba.rsocket.RSocketRequesterSupport;
 import com.alibaba.rsocket.ServiceLocator;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
+import com.alibaba.rsocket.cloudevents.RSocketCloudEventBuilder;
 import com.alibaba.rsocket.events.AppStatusEvent;
+import com.alibaba.rsocket.events.ServicesExposedEvent;
+import com.alibaba.rsocket.events.ServicesHiddenEvent;
 import com.alibaba.rsocket.health.RSocketServiceHealth;
 import com.alibaba.rsocket.invocation.RSocketRemoteServiceBuilder;
 import com.alibaba.rsocket.loadbalance.LoadBalancedRSocket;
 import com.alibaba.rsocket.upstream.UpstreamCluster;
 import com.alibaba.rsocket.upstream.UpstreamManager;
-import io.cloudevents.v1.CloudEventBuilder;
-import io.cloudevents.v1.CloudEventImpl;
+import org.jetbrains.annotations.Nullable;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.boot.actuate.endpoint.annotation.Selector;
@@ -18,8 +21,6 @@ import org.springframework.boot.actuate.endpoint.annotation.WriteOperation;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.net.URI;
-import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -34,6 +35,7 @@ public class RSocketEndpoint {
     private RSocketRequesterSupport rsocketRequesterSupport;
     private UpstreamManager upstreamManager;
     private Integer rsocketServiceStatus = AppStatusEvent.STATUS_SERVING;
+    private Set<String> offlineServices = new HashSet<>();
     private boolean serviceProvider = false;
 
     public RSocketEndpoint(RSocketProperties properties, UpstreamManager upstreamManager, RSocketRequesterSupport rsocketRequesterSupport) {
@@ -55,7 +57,7 @@ public class RSocketEndpoint {
             info.put("published", rsocketRequesterSupport.exposedServices().get());
         }
         if (!RSocketRemoteServiceBuilder.CONSUMED_SERVICES.isEmpty()) {
-            info.put("subscribed", RSocketRemoteServiceBuilder.CONSUMED_SERVICES.stream()
+            info.put("subscribed", rsocketRequesterSupport.subscribedServices().get().stream()
                     .filter(serviceLocator -> !RSocketServiceHealth.class.getCanonicalName().equals(serviceLocator.getService()))
                     .collect(Collectors.toList()));
         }
@@ -82,6 +84,9 @@ public class RSocketEndpoint {
         if (properties.getMetadata() != null && !properties.getMetadata().isEmpty()) {
             info.put("metadata", properties.getMetadata());
         }
+        if (!offlineServices.isEmpty()) {
+            info.put("offlineServices", offlineServices);
+        }
         return info;
     }
 
@@ -90,9 +95,27 @@ public class RSocketEndpoint {
         if ("online".equalsIgnoreCase(action)) {
             this.rsocketServiceStatus = AppStatusEvent.STATUS_SERVING;
             return sendAppStatus(this.rsocketServiceStatus).thenReturn("Succeed to register RSocket services on brokers!");
+        } else if (action.startsWith("online-")) {
+            String serviceName = action.substring("online-".length());
+            ServiceLocator targetService = findServiceLocator(serviceName);
+            if (targetService == null) {
+                return Mono.just("Service not found:  " + serviceName);
+            } else {
+                offlineServices.remove(serviceName);
+                return sendRegisterService(targetService).thenReturn("Succeed to register " + serviceName + " on brokers!");
+            }
         } else if ("offline".equalsIgnoreCase(action)) {
             this.rsocketServiceStatus = AppStatusEvent.STATUS_OUT_OF_SERVICE;
             return sendAppStatus(this.rsocketServiceStatus).thenReturn("Succeed to unregister RSocket services on brokers!");
+        } else if (action.startsWith("offline-")) {
+            String serviceName = action.substring("offline-".length());
+            ServiceLocator targetService = findServiceLocator(serviceName);
+            if (targetService == null) {
+                return Mono.just("Service not found:  " + serviceName);
+            } else {
+                offlineServices.add(serviceName);
+                return sendUnRegisterService(targetService).thenReturn("Succeed to unregister " + serviceName + " on brokers!");
+            }
         } else if ("shutdown".equalsIgnoreCase(action)) {
             this.rsocketServiceStatus = AppStatusEvent.STATUS_STOPPED;
             return sendAppStatus(this.rsocketServiceStatus)
@@ -109,15 +132,38 @@ public class RSocketEndpoint {
     }
 
     public Mono<Void> sendAppStatus(Integer status) {
-        final CloudEventImpl<AppStatusEvent> appStatusEventCloudEvent = CloudEventBuilder.<AppStatusEvent>builder()
-                .withId(UUID.randomUUID().toString())
-                .withTime(ZonedDateTime.now())
-                .withSource(URI.create("app://" + RSocketAppContext.ID))
-                .withType(AppStatusEvent.class.getCanonicalName())
-                .withDataContentType("application/json")
-                .withData(new AppStatusEvent(RSocketAppContext.ID, status))
+        final CloudEventImpl<AppStatusEvent> appStatusEventCloudEvent = RSocketCloudEventBuilder
+                .builder(new AppStatusEvent(RSocketAppContext.ID, status))
                 .build();
         return Flux.fromIterable(upstreamManager.findAllClusters()).flatMap(upstreamCluster -> upstreamCluster.getLoadBalancedRSocket().fireCloudEventToUpstreamAll(appStatusEventCloudEvent)).then();
+    }
+
+    public Mono<Void> sendRegisterService(ServiceLocator targetService) {
+        CloudEventImpl<ServicesExposedEvent> cloudEvent = ServicesExposedEvent.convertServicesToCloudEvent(Collections.singletonList(targetService));
+        return Flux.fromIterable(upstreamManager.findAllClusters()).flatMap(upstreamCluster -> upstreamCluster.getLoadBalancedRSocket().fireCloudEventToUpstreamAll(cloudEvent)).then();
+    }
+
+    public Mono<Void> sendUnRegisterService(ServiceLocator targetService) {
+        CloudEventImpl<ServicesHiddenEvent> cloudEvent = ServicesHiddenEvent.convertServicesToCloudEvent(Collections.singletonList(targetService));
+        return Flux.fromIterable(upstreamManager.findAllClusters()).flatMap(upstreamCluster -> upstreamCluster.getLoadBalancedRSocket().fireCloudEventToUpstreamAll(cloudEvent)).then();
+    }
+
+    /**
+     * find service locator
+     *
+     * @param serviceName service name
+     * @return service name
+     */
+    @Nullable
+    private ServiceLocator findServiceLocator(String serviceName) {
+        ServiceLocator targetService = null;
+        for (ServiceLocator serviceLocator : rsocketRequesterSupport.exposedServices().get()) {
+            if (serviceName.equals(serviceLocator.getService())) {
+                targetService = serviceLocator;
+                break;
+            }
+        }
+        return targetService;
     }
 
     public Integer getRsocketServiceStatus() {

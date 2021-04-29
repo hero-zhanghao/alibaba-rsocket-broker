@@ -1,6 +1,7 @@
 package com.alibaba.spring.boot.rsocket.broker.responder;
 
-import com.alibaba.rsocket.RSocketAppContext;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
+import com.alibaba.rsocket.cloudevents.RSocketCloudEventBuilder;
 import com.alibaba.rsocket.events.AppStatusEvent;
 import com.alibaba.rsocket.metadata.AppMetadata;
 import com.alibaba.rsocket.metadata.BearerTokenMetadata;
@@ -11,6 +12,7 @@ import com.alibaba.rsocket.route.RSocketFilterChain;
 import com.alibaba.rsocket.rpc.LocalReactiveServiceCaller;
 import com.alibaba.rsocket.upstream.UpstreamClusterChangedEvent;
 import com.alibaba.rsocket.utils.MurmurHash3;
+import com.alibaba.spring.boot.rsocket.broker.BrokerAppContext;
 import com.alibaba.spring.boot.rsocket.broker.cluster.RSocketBroker;
 import com.alibaba.spring.boot.rsocket.broker.cluster.RSocketBrokerManager;
 import com.alibaba.spring.boot.rsocket.broker.route.ServiceMeshInspector;
@@ -18,14 +20,11 @@ import com.alibaba.spring.boot.rsocket.broker.route.ServiceRoutingSelector;
 import com.alibaba.spring.boot.rsocket.broker.security.AuthenticationService;
 import com.alibaba.spring.boot.rsocket.broker.security.JwtPrincipal;
 import com.alibaba.spring.boot.rsocket.broker.security.RSocketAppPrincipal;
-import io.cloudevents.v1.CloudEventBuilder;
-import io.cloudevents.v1.CloudEventImpl;
 import io.micrometer.core.instrument.Metrics;
 import io.rsocket.ConnectionSetupPayload;
 import io.rsocket.RSocket;
 import io.rsocket.exceptions.ApplicationErrorException;
 import io.rsocket.exceptions.RejectedSetupException;
-import io.rsocket.metadata.WellKnownMimeType;
 import org.eclipse.collections.api.block.function.primitive.DoubleFunction;
 import org.eclipse.collections.api.multimap.Multimap;
 import org.eclipse.collections.impl.map.mutable.ConcurrentHashMap;
@@ -34,14 +33,14 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.ApplicationContext;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
-import reactor.extra.processor.TopicProcessor;
 
 import java.net.URI;
 import java.time.Duration;
-import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -56,8 +55,8 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
     private RSocketFilterChain rsocketFilterChain;
     private LocalReactiveServiceCaller localReactiveServiceCaller;
     private ServiceRoutingSelector routingSelector;
-    private TopicProcessor<CloudEventImpl> eventProcessor;
-    private TopicProcessor<String> notificationProcessor;
+    private Sinks.Many<CloudEventImpl> eventProcessor;
+    private Sinks.Many<String> notificationProcessor;
     private AuthenticationService authenticationService;
     /**
      * connections, key is connection id
@@ -74,15 +73,17 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
     private RSocketBrokerManager rsocketBrokerManager;
     private ServiceMeshInspector serviceMeshInspector;
     private boolean authRequired;
+    private ApplicationContext applicationContext;
 
     public RSocketBrokerHandlerRegistryImpl(LocalReactiveServiceCaller localReactiveServiceCaller, RSocketFilterChain rsocketFilterChain,
                                             ServiceRoutingSelector routingSelector,
-                                            TopicProcessor<CloudEventImpl> eventProcessor,
-                                            TopicProcessor<String> notificationProcessor,
+                                            Sinks.Many<CloudEventImpl> eventProcessor,
+                                            Sinks.Many<String> notificationProcessor,
                                             AuthenticationService authenticationService,
                                             RSocketBrokerManager rsocketBrokerManager,
                                             ServiceMeshInspector serviceMeshInspector,
-                                            boolean authRequired) {
+                                            boolean authRequired,
+                                            ApplicationContext applicationContext) {
         this.localReactiveServiceCaller = localReactiveServiceCaller;
         this.rsocketFilterChain = rsocketFilterChain;
         this.routingSelector = routingSelector;
@@ -92,6 +93,7 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
         this.rsocketBrokerManager = rsocketBrokerManager;
         this.serviceMeshInspector = serviceMeshInspector;
         this.authRequired = authRequired;
+        this.applicationContext = applicationContext;
         if (!rsocketBrokerManager.isStandAlone()) {
             this.rsocketBrokerManager.requestAll().flatMap(this::broadcastClusterTopology).subscribe();
         }
@@ -126,6 +128,9 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
             if (principal != null && compositeMetadata.contains(RSocketMimeType.Application)) {
                 AppMetadata temp = AppMetadata.from(compositeMetadata.getMetadata(RSocketMimeType.Application));
                 //App registration validation: app id: UUID and unique in server
+                if (temp.getUuid() == null || temp.getUuid().isEmpty()) {
+                    temp.setUuid(UUID.randomUUID().toString());
+                }
                 String appId = temp.getUuid();
                 //validate appId data format
                 if (appId != null && appId.length() >= 32) {
@@ -166,7 +171,7 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
         //create handler
         try {
             RSocketBrokerResponderHandler brokerResponderHandler = new RSocketBrokerResponderHandler(setupPayload, compositeMetadata, appMetadata, principal,
-                    requesterSocket, routingSelector, eventProcessor, this, serviceMeshInspector);
+                    requesterSocket, routingSelector, eventProcessor, this, serviceMeshInspector, getUpstreamRSocket());
             brokerResponderHandler.setFilterChain(rsocketFilterChain);
             brokerResponderHandler.setLocalReactiveServiceCaller(localReactiveServiceCaller);
             brokerResponderHandler.onClose()
@@ -213,11 +218,11 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
         responderHandlers.put(appMetadata.getUuid(), responderHandler);
         connectionHandlers.put(responderHandler.getId(), responderHandler);
         appHandlers.put(appMetadata.getName(), responderHandler);
-        eventProcessor.onNext(appStatusEventCloudEvent(appMetadata, AppStatusEvent.STATUS_CONNECTED));
+        eventProcessor.tryEmitNext(appStatusEventCloudEvent(appMetadata, AppStatusEvent.STATUS_CONNECTED));
         if (!rsocketBrokerManager.isStandAlone()) {
             responderHandler.fireCloudEventToPeer(getBrokerClustersEvent(rsocketBrokerManager.currentBrokers(), appMetadata.getTopology())).subscribe();
         }
-        this.notificationProcessor.onNext(RsocketErrorCode.message("RST-300203", appMetadata.getName(), appMetadata.getIp()));
+        this.notificationProcessor.tryEmitNext(RsocketErrorCode.message("RST-300203", appMetadata.getName(), appMetadata.getIp()));
     }
 
     @Override
@@ -228,8 +233,8 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
         appHandlers.remove(appMetadata.getName(), responderHandler);
         log.info(RsocketErrorCode.message("RST-500202"));
         responderHandler.clean();
-        eventProcessor.onNext(appStatusEventCloudEvent(appMetadata, AppStatusEvent.STATUS_STOPPED));
-        this.notificationProcessor.onNext(RsocketErrorCode.message("RST-300204", appMetadata.getName(), appMetadata.getIp()));
+        eventProcessor.tryEmitNext(appStatusEventCloudEvent(appMetadata, AppStatusEvent.STATUS_STOPPED));
+        this.notificationProcessor.tryEmitNext(RsocketErrorCode.message("RST-300204", appMetadata.getName(), appMetadata.getIp()));
     }
 
     @Override
@@ -239,7 +244,11 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
 
     @Override
     public Mono<Void> broadcast(@NotNull String appName, final CloudEventImpl cloudEvent) {
-        if (appHandlers.containsKey(appName)) {
+        if (appName.equals("*")) {
+            return Flux.fromIterable(connectionHandlers.values())
+                    .flatMap(handler -> handler.fireCloudEventToPeer(cloudEvent))
+                    .then();
+        } else if (appHandlers.containsKey(appName)) {
             return Flux.fromIterable(appHandlers.get(appName))
                     .flatMap(handler -> handler.fireCloudEventToPeer(cloudEvent))
                     .then();
@@ -274,13 +283,8 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
     }
 
     private CloudEventImpl<AppStatusEvent> appStatusEventCloudEvent(AppMetadata appMetadata, Integer status) {
-        return CloudEventBuilder.<AppStatusEvent>builder()
-                .withId(UUID.randomUUID().toString())
-                .withTime(ZonedDateTime.now())
-                .withSource(URI.create("app://" + appMetadata.getUuid()))
-                .withType(AppStatusEvent.class.getCanonicalName())
-                .withDataContentType("application/json")
-                .withData(new AppStatusEvent(appMetadata.getUuid(), status))
+        return RSocketCloudEventBuilder
+                .builder(new AppStatusEvent(appMetadata.getUuid(), status))
                 .build();
     }
 
@@ -304,14 +308,9 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
         upstreamClusterChangedEvent.setUris(uris);
 
         // passing in the given attributes
-        return CloudEventBuilder.<UpstreamClusterChangedEvent>builder()
-                .withType("com.alibaba.rsocket.upstream.UpstreamClusterChangedEvent")
-                .withId(UUID.randomUUID().toString())
-                .withTime(ZonedDateTime.now())
+        return RSocketCloudEventBuilder.builder(upstreamClusterChangedEvent)
                 .withDataschema(URI.create("rsocket:event:com.alibaba.rsocket.upstream.UpstreamClusterChangedEvent"))
-                .withDataContentType(WellKnownMimeType.APPLICATION_JSON.getString())
-                .withSource(URI.create("broker://" + RSocketAppContext.ID))
-                .withData(upstreamClusterChangedEvent)
+                .withSource(BrokerAppContext.identity())
                 .build();
     }
 
@@ -321,7 +320,14 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
         return Flux.fromIterable(findAll()).flatMap(handler -> {
             Integer roles = handler.getRoles();
             String topology = handler.getAppMetadata().getTopology();
-            Mono<Void> fireEvent = "internet".equals(topology) ? handler.fireCloudEventToPeer(brokerClusterAliasesEvent) : handler.fireCloudEventToPeer(brokerClustersEvent);
+            Mono<Void> fireEvent;
+            if ("internet".equals(topology)) {
+                // add defaultUri for internet access for IoT devices
+                // RSocketBroker defaultBroker = rsocketBrokerManager.findConsistentBroker(handler.getUuid());
+                fireEvent = handler.fireCloudEventToPeer(brokerClusterAliasesEvent);
+            } else {
+                fireEvent = handler.fireCloudEventToPeer(brokerClustersEvent);
+            }
             if (roles == 2) { // publish services only
                 return fireEvent;
             } else if (roles == 3) { //consume and publish services
@@ -334,7 +340,7 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
 
     @SuppressWarnings("ArraysAsListWithZeroOrOneArgument")
     public JwtPrincipal appNameBasedPrincipal(String appName) {
-        return new JwtPrincipal(appName,
+        return new JwtPrincipal(UUID.randomUUID().toString(), appName,
                 Arrays.asList("mock_owner"),
                 new HashSet<>(Arrays.asList("admin")),
                 Collections.emptySet(),
@@ -356,5 +362,16 @@ public class RSocketBrokerHandlerRegistryImpl implements RSocketBrokerHandlerReg
                 requesterSocket.dispose();
             }
         }));
+    }
+
+    @Nullable
+    private RSocket getUpstreamRSocket() {
+        if (applicationContext.containsBean("upstreamBrokerRSocket")) {
+            try {
+                return (RSocket) applicationContext.getBean("upstreamBrokerRSocket");
+            } catch (Exception ignore) {
+            }
+        }
+        return null;
     }
 }

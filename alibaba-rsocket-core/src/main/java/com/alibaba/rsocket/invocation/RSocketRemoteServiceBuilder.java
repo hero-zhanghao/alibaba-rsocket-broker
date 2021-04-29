@@ -6,13 +6,10 @@ import com.alibaba.rsocket.ServiceMapping;
 import com.alibaba.rsocket.metadata.RSocketMimeType;
 import com.alibaba.rsocket.upstream.UpstreamCluster;
 import com.alibaba.rsocket.upstream.UpstreamManager;
-import net.bytebuddy.ByteBuddy;
-import net.bytebuddy.ClassFileVersion;
-import net.bytebuddy.implementation.MethodDelegation;
-import net.bytebuddy.matcher.ElementMatchers;
 import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Proxy;
+import java.net.URI;
 import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
@@ -24,11 +21,13 @@ import java.util.Set;
  */
 public class RSocketRemoteServiceBuilder<T> {
     public static final Set<ServiceLocator> CONSUMED_SERVICES = new HashSet<>();
+    private URI sourceUri;
     private String group;
     private String service;
     private String version;
     private Duration timeout = Duration.ofMillis(3000);
     private String endpoint;
+    private boolean sticky;
     private Class<T> serviceInterface;
     private RSocketMimeType encodingType = RSocketMimeType.Hessian;
     private RSocketMimeType acceptEncodingType;
@@ -38,6 +37,15 @@ public class RSocketRemoteServiceBuilder<T> {
      */
     private boolean braveTracing = true;
     private Tracing tracing;
+    public static boolean byteBuddyAvailable = true;
+
+    static {
+        try {
+            Class.forName("net.bytebuddy.ByteBuddy");
+        } catch (Exception e) {
+            byteBuddyAvailable = false;
+        }
+    }
 
     public static <T> RSocketRemoteServiceBuilder<T> client(Class<T> serviceInterface) {
         RSocketRemoteServiceBuilder<T> builder = new RSocketRemoteServiceBuilder<T>();
@@ -63,6 +71,7 @@ public class RSocketRemoteServiceBuilder<T> {
             if (!serviceMapping.resultEncoding().isEmpty()) {
                 builder.acceptEncodingType = RSocketMimeType.valueOfType(serviceMapping.resultEncoding());
             }
+            builder.sticky = serviceMapping.sticky();
         }
         try {
             Class.forName("brave.propagation.TraceContext");
@@ -105,6 +114,11 @@ public class RSocketRemoteServiceBuilder<T> {
         return this;
     }
 
+    public RSocketRemoteServiceBuilder<T> sticky(boolean sticky) {
+        this.sticky = sticky;
+        return this;
+    }
+
     public RSocketRemoteServiceBuilder<T> upstream(UpstreamCluster upstreamCluster) {
         this.upstreamCluster = upstreamCluster;
         return this;
@@ -125,6 +139,16 @@ public class RSocketRemoteServiceBuilder<T> {
         return this;
     }
 
+    /**
+     * GraalVM nativeImage support: set encodeType and acceptEncodingType to Json
+     * @return  this
+     */
+    public RSocketRemoteServiceBuilder<T> nativeImage() {
+        this.encodingType = RSocketMimeType.Json;
+        this.acceptEncodingType = RSocketMimeType.Json;
+        return this;
+    }
+
     public RSocketRemoteServiceBuilder<T> upstreamManager(UpstreamManager upstreamManager) {
         String serviceId = ServiceLocator.serviceId(group, service, version);
         UpstreamCluster upstream = upstreamManager.findClusterByServiceId(serviceId);
@@ -132,25 +156,15 @@ public class RSocketRemoteServiceBuilder<T> {
             upstream = upstreamManager.findBroker();
         }
         this.upstreamCluster = upstream;
+        this.sourceUri = upstreamManager.requesterSupport().originUri();
         return this;
     }
 
-    @SuppressWarnings("unchecked")
     public T build() {
-        CONSUMED_SERVICES.add(new ServiceLocator(group, service, version));
-        RSocketRequesterRpcProxy proxy = getRequesterProxy();
-        Class<T> dynamicType = (Class<T>) new ByteBuddy(ClassFileVersion.JAVA_V8)
-                .subclass(serviceInterface)
-                .name(serviceInterface.getSimpleName() + "RSocketStub")
-                .method(ElementMatchers.not(ElementMatchers.isDefaultMethod()))
-                .intercept(MethodDelegation.to(proxy))
-                .make()
-                .load(serviceInterface.getClassLoader())
-                .getLoaded();
-        try {
-            return dynamicType.newInstance();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+        if (byteBuddyAvailable) {
+            return buildByteBuddyProxy();
+        } else {
+            return buildJdkProxy();
         }
     }
 
@@ -158,10 +172,10 @@ public class RSocketRemoteServiceBuilder<T> {
     private RSocketRequesterRpcProxy getRequesterProxy() {
         if (this.braveTracing && this.tracing != null) {
             return new RSocketRequesterRpcZipkinProxy(tracing, upstreamCluster, group, serviceInterface, service, version,
-                    encodingType, acceptEncodingType, timeout, endpoint);
+                    encodingType, acceptEncodingType, timeout, endpoint, sticky, sourceUri, !byteBuddyAvailable);
         } else {
             return new RSocketRequesterRpcProxy(upstreamCluster, group, serviceInterface, service, version,
-                    encodingType, acceptEncodingType, timeout, endpoint);
+                    encodingType, acceptEncodingType, timeout, endpoint, sticky, sourceUri, !byteBuddyAvailable);
         }
     }
 
@@ -173,5 +187,11 @@ public class RSocketRemoteServiceBuilder<T> {
                 serviceInterface.getClassLoader(),
                 new Class[]{serviceInterface},
                 proxy);
+    }
+
+    public T buildByteBuddyProxy() {
+        CONSUMED_SERVICES.add(new ServiceLocator(group, service, version));
+        RSocketRequesterRpcProxy proxy = getRequesterProxy();
+        return ByteBuddyUtils.build(this.serviceInterface, proxy);
     }
 }

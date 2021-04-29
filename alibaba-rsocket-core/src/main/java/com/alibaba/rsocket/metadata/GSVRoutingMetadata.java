@@ -5,7 +5,7 @@ import com.alibaba.rsocket.utils.MurmurHash3;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.rsocket.metadata.RoutingMetadata;
-import io.rsocket.metadata.TaggingMetadataFlyweight;
+import io.rsocket.metadata.TaggingMetadataCodec;
 
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -37,6 +37,10 @@ public class GSVRoutingMetadata implements MetadataAware {
      * endpoint
      */
     private String endpoint;
+    /**
+     * sticky session
+     */
+    private boolean sticky;
     /**
      * target instance ID
      */
@@ -129,6 +133,14 @@ public class GSVRoutingMetadata implements MetadataAware {
         this.endpoint = endpoint;
     }
 
+    public boolean isSticky() {
+        return sticky;
+    }
+
+    public void setSticky(boolean sticky) {
+        this.sticky = sticky;
+    }
+
     @Override
     public RSocketMimeType rsocketMimeType() {
         return RSocketMimeType.Routing;
@@ -150,7 +162,10 @@ public class GSVRoutingMetadata implements MetadataAware {
         if (endpoint != null && !endpoint.isEmpty()) {
             tags.add("e=" + endpoint);
         }
-        return TaggingMetadataFlyweight.createTaggingContent(PooledByteBufAllocator.DEFAULT, tags);
+        if (sticky) {
+            tags.add("sticky=1");
+        }
+        return TaggingMetadataCodec.createTaggingContent(PooledByteBufAllocator.DEFAULT, tags);
     }
 
     /**
@@ -165,17 +180,17 @@ public class GSVRoutingMetadata implements MetadataAware {
             parseRoutingKey(iterator.next());
         }
         while (iterator.hasNext()) {
-            String tag = iterator.next();
-            if (tag.startsWith("m=")) {
-                this.method = tag.substring(2);
-            } else if (tag.startsWith("e=")) {
-                this.endpoint = tag.substring(2);
-            }
+            parseTag(iterator.next());
         }
     }
 
     private void parseRoutingKey(String routingKey) {
         String temp = routingKey;
+        String tags = null;
+        if (routingKey.contains("?")) {
+            temp = routingKey.substring(0, routingKey.indexOf("?"));
+            tags = routingKey.substring(routingKey.indexOf("?") + 1);
+        }
         //group parse
         int groupSymbolPosition = temp.indexOf('!');
         if (groupSymbolPosition > 0) {
@@ -196,6 +211,22 @@ public class GSVRoutingMetadata implements MetadataAware {
         } else {
             this.service = temp;
         }
+        if (tags != null) {
+            String[] tagParts = tags.split("&");
+            for (String tagPart : tagParts) {
+                parseTag(tagPart);
+            }
+        }
+    }
+
+    private void parseTag(String tag) {
+        if (tag.startsWith("m=")) {
+            this.method = tag.substring(2);
+        } else if (tag.startsWith("e=")) {
+            this.endpoint = tag.substring(2);
+        } else if (tag.equalsIgnoreCase("sticky=1")) {
+            this.sticky = true;
+        }
     }
 
     public String assembleRoutingKey() {
@@ -213,6 +244,15 @@ public class GSVRoutingMetadata implements MetadataAware {
         //version
         if (version != null && !version.isEmpty()) {
             routingBuilder.append(':').append(version);
+        }
+        if (this.sticky || this.endpoint != null) {
+            routingBuilder.append("?");
+            if (this.sticky) {
+                routingBuilder.append("sticky=1&");
+            }
+            if (this.endpoint != null) {
+                routingBuilder.append("e=").append(endpoint).append("&");
+            }
         }
         return routingBuilder.toString();
     }

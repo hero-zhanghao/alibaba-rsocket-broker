@@ -25,6 +25,15 @@ import java.util.Arrays;
  */
 public class ObjectEncodingHandlerCborImpl implements ObjectEncodingHandler {
     private ObjectMapper objectMapper = new ObjectMapper(new CBORFactory());
+    private boolean ktCbor = true;
+
+    public ObjectEncodingHandlerCborImpl() {
+        try {
+            Class.forName("kotlinx.serialization.cbor.Cbor");
+        } catch (Exception e) {
+            ktCbor = false;
+        }
+    }
 
     @NotNull
     @Override
@@ -40,7 +49,6 @@ public class ObjectEncodingHandlerCborImpl implements ObjectEncodingHandler {
         ByteBuf byteBuf = PooledByteBufAllocator.DEFAULT.buffer();
         try {
             ByteBufOutputStream bos = new ByteBufOutputStream(byteBuf);
-            //noinspection ConstantConditions
             objectMapper.writeValue((OutputStream) bos, args[0]);
             return byteBuf;
         } catch (Exception e) {
@@ -83,6 +91,12 @@ public class ObjectEncodingHandlerCborImpl implements ObjectEncodingHandler {
     public Object decodeResult(ByteBuf data, @Nullable Class<?> targetClass) throws EncodingException {
         if (data.readableBytes() > 0 && targetClass != null) {
             try {
+                //Kotlin Cbor Serializer
+                if (ktCbor && KotlinSerializerSupport.isKotlinSerializable(targetClass)) {
+                    byte[] bytes = new byte[data.readableBytes()];
+                    data.readBytes(bytes);
+                    return KotlinSerializerSupport.decodeFromCbor(bytes, targetClass);
+                }
                 return objectMapper.readValue((InputStream) new ByteBufInputStream(data), targetClass);
             } catch (Exception e) {
                 throw new EncodingException(RsocketErrorCode.message("RST-700501", "ByteBuf", targetClass.getName()), e);

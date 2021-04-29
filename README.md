@@ -1,22 +1,41 @@
-Alibaba RSocket Broker
-======================
-[![Maven](https://img.shields.io/maven-central/v/com.alibaba.rsocket/alibaba-rsocket-spring-boot-starter)](https://repo1.maven.org/maven2/com/alibaba/rsocket/)
-[!["Open Issues"](https://img.shields.io/github/issues-raw/alibaba/alibaba-rsocket-broker.svg)](https://github.com/alibaba/alibaba-rsocket-broker/issues)
-[![Build Status](https://api.travis-ci.com/alibaba/alibaba-rsocket-broker.svg?branch=master)](https://travis-ci.com/alibaba/alibaba-rsocket-broker)
-[![Apache License 2](https://img.shields.io/badge/license-ASF2-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0.txt)
-&nbsp;&nbsp;&nbsp;&nbsp;
-[![English README](https://img.shields.io/badge/EN-README-brightgreen)](https://github.com/alibaba/alibaba-rsocket-broker/blob/master/README-en.md)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/wiki/alibaba/alibaba-rsocket-broker/img/logo.png" alt="logo" width="30%"/>
+</p>
+<p align="center">
+  <a href="https://gitter.im/alibaba-rsocket-broker/community?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge">
+    <img alt="Gitter" src="https://badges.gitter.im/alibaba-rsocket-broker/community.svg"></a>
+  <a href="https://repo1.maven.org/maven2/com/alibaba/rsocket/">
+    <img alt="Maven" src="https://img.shields.io/maven-central/v/com.alibaba.rsocket/alibaba-rsocket-spring-boot-starter"></a>
+  <a href="https://github.com/alibaba/alibaba-rsocket-broker">
+    <img alt="GitHub repo size" src="https://img.shields.io/github/repo-size/alibaba/alibaba-rsocket-broker"></a>
+  <a href="https://github.com/alibaba/alibaba-rsocket-broker/issues">
+    <img alt = "Open Issues" src="https://img.shields.io/github/issues-raw/alibaba/alibaba-rsocket-broker.svg"></a>
+  <a href="https://travis-ci.com/alibaba/alibaba-rsocket-broker">
+    <img alt = "Build Status" src="https://api.travis-ci.com/alibaba/alibaba-rsocket-broker.svg?branch=master"></a>
+  <a href="https://www.apache.org/licenses/LICENSE-2.0.txt">
+    <img alt = "Apache License 2" src="https://img.shields.io/badge/license-ASF2-blue.svg"></a>
+  <a href="https://github.com/alibaba/alibaba-rsocket-broker/blob/master/README-en.md">
+    <img src="https://img.shields.io/badge/EN-README-brightgreen"></a>
+</p>
+    
 
-Alibaba RSocket Broker是一款基于RSocket协议的反应式程控消息交换系统，为通讯双方构建一个透明稳健的通讯桥梁。
 
-* 反应式: 编程模型、线程模型、异步化、独特的对等通讯模式可适应各种内部网络环境和跨云需求。
-* 程控：程序控制，可定制和方便的功能扩展，如支持反向的Prometheus Metrics采集、ZipKin RSocket Collector等。
-* 消息：面向消息通讯，路由、过滤、observability都非常简单
-* 交换系统：完全分布式、异构系统整合简单，无论什么语言开发，部署在哪里。
-* 更多RSocket Broker介绍，请访问产品Wiki https://github.com/alibaba/alibaba-rsocket-broker/wiki 或者 RSocket by Example http://rsocketbyexample.info
+Alibaba RSocket Broker是一款基于RSocket协议的反应式对等通讯系统，为通讯多方构建分布式的RPC, Pub/Sub, Streaming等通讯支持。
+
+* 反应式: 无需担心线程模型、全异步化、流式背压支持、独特的对等通讯模式可适应各种内部网络环境和跨云混云的需求。
+* 程控：完善的控制面(Control Plane)支持，可定制和方便的功能扩展，如支持反向的Prometheus Metrics采集、ZipKin RSocket Collector、Chaos等。
+* 消息：面向消息通讯，服务路由、过滤、observability都非常简单。
+* 交换系统：完全分布式、异构系统整合简单，无论应用什么语言开发、部署在哪里，都可以相互通讯。
+
+更多RSocket Broker资源和介绍，请访问以下资源：
+
+* Alibaba RSocket Broker Wiki https://github.com/alibaba/alibaba-rsocket-broker/wiki
+* Alibaba RSocket Broker样例: https://github.com/alibaba-rsocket-broker/
+* RSocket by Example: http://rsocketbyexample.info
+* Github Discussions讨论区: https://github.com/alibaba/alibaba-rsocket-broker/discussions
 
 ### RSocket Broker工作原理
-RSocket Broker是桥接应用间通讯的双方，相当于一个中间人的角色。
+RSocket Broker桥接应用间通讯的双方，相当于一个中间人的角色。
 应用在启动后，和Broker创建一个长连接，在连接创建的时候需要标明自己的身份，如果是服务提供者，会注册自己能提供的服务信息。
 Broker会针对所有的连接和服务列表建立对应的映射关系。
 当一个应用需要调用其他服务时，应用会将请求以消息的方式发给Broker，然后Broker会解析消息的元信息，然后根据路由表将请求转发给服务提供者，然后将处理结果后的消息再转发给调用方。
@@ -55,7 +74,7 @@ Broker完全是异步化的，你不需要关心线程池这些概念，而且�
 
 ### 如何运行Example?
 
-**注意:** 样例代码中的AccountService接口采用了Protobuf进行序列化，使用了protobuf-maven-plugin生成对应的Protobuf，  
+**注意:** 样例代码中的AccountService接口采用了Protobuf进行序列化，使用了protobuf-maven-plugin生成对应的Protobuf,
 建议使用IDE导入项目之前，首先在项目的根目录下执行一下"mvn -DskipTests package"完成Protobuf对应的代码生成，不然直接在IDE中编译可能出现编译不通过的情况。
 
 项目提供了完成的样例，你可以在[example模块](/example/)下找到，包括服务接口定义、服务实现和服务调用三个部分。
@@ -85,7 +104,7 @@ $ curl http://localhost:8181/user/2
 
 * 创建一个RSocket服务接口，你可以创建一个单独的Maven Module存放这些接口，如user-service-api，样例代码如下：
 
-```
+```java
 public interface UserService {
     Mono<User> findById(Integer id);
 }
@@ -93,7 +112,7 @@ public interface UserService {
 
 * 在RSocket Responder端实现该接口，同时给实现类添加 @RSocketService annotation，如下：
 
-```
+```java
 @RSocketService(serviceInterface = UserService.class)
 @Service
 public class UserServiceImpl implements UserService {
@@ -120,7 +139,7 @@ public class UserServiceImpl implements UserService {
 
 * 在RSocket Requester端，进行代码调用，如HTTP REST API提供给:
 
-```
+```java
 @RestController
 public class PortalController {
     @Autowired
@@ -133,6 +152,7 @@ public class PortalController {
 }
 ```
 
+样例项目请参考： https://github.com/alibaba-rsocket-broker/rsocket-broker-simple-example
 
 ### References
 

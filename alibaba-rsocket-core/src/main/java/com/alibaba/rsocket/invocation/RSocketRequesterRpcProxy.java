@@ -15,6 +15,7 @@ import io.rsocket.Payload;
 import io.rsocket.RSocket;
 import io.rsocket.frame.FrameType;
 import io.rsocket.util.ByteBufPayload;
+import kotlin.coroutines.Continuation;
 import net.bytebuddy.implementation.bind.annotation.AllArguments;
 import net.bytebuddy.implementation.bind.annotation.Origin;
 import net.bytebuddy.implementation.bind.annotation.RuntimeType;
@@ -26,14 +27,11 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.net.URI;
 import java.time.Duration;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeoutException;
@@ -68,8 +66,13 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
      */
     protected String endpoint;
     /**
+     * sticky session
+     */
+    protected boolean sticky;
+    /**
      * encoding type
      */
+    private URI sourceUri;
     protected RSocketMimeType encodingType;
     /**
      * accept encoding types
@@ -88,15 +91,13 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
      * java method metadata map cache for performance
      */
     protected Map<Method, ReactiveMethodMetadata> methodMetadataMap = new ConcurrentHashMap<>();
-    /**
-     * interface default method handlers
-     */
-    protected Map<Method, MethodHandle> defaultMethodHandles = new HashMap<>();
+
+    private boolean jdkProxy;
 
     public RSocketRequesterRpcProxy(UpstreamCluster upstream,
                                     String group, Class<?> serviceInterface, @Nullable String service, String version,
                                     RSocketMimeType encodingType, @Nullable RSocketMimeType acceptEncodingType,
-                                    Duration timeout, @Nullable String endpoint) {
+                                    Duration timeout, @Nullable String endpoint, boolean sticky, URI sourceUri, boolean jdkProxy) {
         this.rsocket = upstream.getLoadBalancedRSocket();
         this.serviceInterface = serviceInterface;
         this.service = serviceInterface.getCanonicalName();
@@ -106,6 +107,8 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
         this.group = group;
         this.version = version;
         this.endpoint = endpoint;
+        this.sticky = sticky;
+        this.sourceUri = sourceUri;
         this.encodingType = encodingType;
         if (acceptEncodingType == null) {
             this.acceptEncodingTypes = defaultAcceptEncodingTypes();
@@ -113,21 +116,28 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
             this.acceptEncodingTypes = new RSocketMimeType[]{acceptEncodingType};
         }
         this.timeout = timeout;
+        this.jdkProxy = jdkProxy;
     }
 
     @Override
     @RuntimeType
-    public Object invoke(@This Object proxy, @Origin Method method, @AllArguments Object[] args) throws Throwable {
+    public Object invoke(@This Object proxy, @Origin Method method, @AllArguments Object[] allArguments) throws Throwable {
         //interface default method validation for JDK Proxy only, not necessary for ByteBuddy
-        /*if (method.isDefault()) {
-            return getMethodHandle(method, serviceInterface).bindTo(proxy).invokeWithArguments(args);
-        }*/
+        if (jdkProxy && method.isDefault()) {
+            return DefaultMethodHandler.getMethodHandle(method, serviceInterface).bindTo(proxy).invokeWithArguments(allArguments);
+        }
         MutableContext mutableContext = new MutableContext();
         if (!methodMetadataMap.containsKey(method)) {
             methodMetadataMap.put(method, new ReactiveMethodMetadata(group, service, version,
-                    method, encodingType, this.acceptEncodingTypes, endpoint));
+                    method, encodingType, this.acceptEncodingTypes, endpoint, sticky, sourceUri));
         }
         ReactiveMethodMetadata methodMetadata = methodMetadataMap.get(method);
+        mutableContext.put(ReactiveMethodMetadata.class, methodMetadata);
+        Object[] args = allArguments;
+        if (methodMetadata.isKotlinSuspend()) {
+            args = Arrays.copyOfRange(args, 0, args.length - 1);
+            mutableContext.put(Continuation.class, allArguments[allArguments.length - 1]);
+        }
         //----- return type deal------
         if (methodMetadata.getRsocketFrameType() == FrameType.REQUEST_CHANNEL) {
             metrics(methodMetadata);
@@ -136,11 +146,11 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
             //1 param or 2 params
             if (args.length == 1) {
                 routePayload = ByteBufPayload.create(Unpooled.EMPTY_BUFFER, methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate());
-                source = (Flux<Object>) args[0];
+                source = methodMetadata.getReactiveAdapter().toFlux(args[0]);
             } else {
                 ByteBuf bodyBuffer = encodingFacade.encodingResult(args[0], methodMetadata.getParamEncoding());
                 routePayload = ByteBufPayload.create(bodyBuffer, methodMetadata.getCompositeMetadataByteBuf().retainedDuplicate());
-                source = (Flux<Object>) args[1];
+                source = methodMetadata.getReactiveAdapter().toFlux(args[1]);
             }
             Flux<Payload> payloadFlux = source.startWith(routePayload).map(obj -> {
                 if (obj instanceof Payload) return (Payload) obj;
@@ -159,7 +169,7 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
             if (methodMetadata.isMonoChannel()) {
                 return fluxReturn.last();
             } else {
-                return fluxReturn;
+                return methodMetadata.getReactiveAdapter().fromPublisher(fluxReturn, method.getReturnType());
             }
         } else {
             //body content
@@ -237,30 +247,6 @@ public class RSocketRequesterRpcProxy implements InvocationHandler {
             return mimeTypeMetadata.getRSocketMimeType();
         }
         return defaultEncodingType;
-    }
-
-    @Deprecated
-    public MethodHandle getMethodHandle(Method method, Class<?> serviceInterface) throws Exception {
-        MethodHandle methodHandle = this.defaultMethodHandles.get(method);
-        if (methodHandle == null) {
-            String version = System.getProperty("java.version");
-            if (version.startsWith("1.8.")) {
-                Constructor<MethodHandles.Lookup> lookupConstructor = MethodHandles.Lookup.class.getDeclaredConstructor(Class.class, Integer.TYPE);
-                if (!lookupConstructor.isAccessible()) {
-                    lookupConstructor.setAccessible(true);
-                }
-                methodHandle = lookupConstructor.newInstance(method.getDeclaringClass(), MethodHandles.Lookup.PRIVATE)
-                        .unreflectSpecial(method, method.getDeclaringClass());
-            } else {
-                methodHandle = MethodHandles.lookup().findSpecial(
-                        method.getDeclaringClass(),
-                        method.getName(),
-                        MethodType.methodType(method.getReturnType(), method.getParameterTypes()),
-                        serviceInterface);
-            }
-            this.defaultMethodHandles.put(method, methodHandle);
-        }
-        return methodHandle;
     }
 
     public RSocketMimeType[] defaultAcceptEncodingTypes() {

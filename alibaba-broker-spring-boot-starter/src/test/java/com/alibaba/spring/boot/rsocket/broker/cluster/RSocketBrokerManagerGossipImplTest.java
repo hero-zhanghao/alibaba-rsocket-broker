@@ -1,9 +1,9 @@
 package com.alibaba.spring.boot.rsocket.broker.cluster;
 
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
+import com.alibaba.rsocket.cloudevents.RSocketCloudEventBuilder;
 import com.alibaba.rsocket.events.AppStatusEvent;
-import com.alibaba.spring.boot.rsocket.broker.cluster.scalecube.codec.jackson.JacksonMessageCodec;
-import io.cloudevents.v1.CloudEventBuilder;
-import io.cloudevents.v1.CloudEventImpl;
+import io.scalecube.cluster.codec.jackson.JacksonMessageCodec;
 import io.scalecube.cluster.transport.api.Message;
 import io.scalecube.cluster.transport.api.MessageCodec;
 import org.assertj.core.api.Assertions;
@@ -11,8 +11,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
-import java.net.URI;
-import java.time.ZonedDateTime;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -45,13 +43,7 @@ public class RSocketBrokerManagerGossipImplTest {
     @Test
     public void testGossipMessageWithCloudEvents() throws Exception {
         AppStatusEvent appStatusEvent = new AppStatusEvent("1", 1);
-        CloudEventImpl<AppStatusEvent> cloudEvent = CloudEventBuilder.<AppStatusEvent>builder()
-                .withId("1")
-                .withSource(URI.create("app://1"))
-                .withType("type1")
-                .withTime(ZonedDateTime.now())
-                .withDataContentType("application/json")
-                .withData(appStatusEvent)
+        CloudEventImpl<AppStatusEvent> cloudEvent = RSocketCloudEventBuilder.builder(appStatusEvent)
                 .withSubject("app status update")
                 .build();
         Message message = Message.builder().correlationId("1").data(cloudEvent).build();

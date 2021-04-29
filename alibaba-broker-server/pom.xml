@@ -5,7 +5,7 @@
     <parent>
         <groupId>com.alibaba.rsocket</groupId>
         <artifactId>alibaba-rsocket-broker-parent</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
+        <version>1.1.1-SNAPSHOT</version>
     </parent>
 
     <artifactId>alibaba-broker-server</artifactId>
@@ -13,8 +13,9 @@
     <description>Alibaba RSocket Broker with Web Console</description>
 
     <properties>
-        <vaadin.version>14.1.23</vaadin.version>
-        <flexmark-all.version>0.61.0</flexmark-all.version>
+        <vaadin.version>19.0.6</vaadin.version>
+        <flexmark-all.version>0.62.2</flexmark-all.version>
+        <undertow.version>2.2.7.Final</undertow.version>
         <vaadin.productionMode>true</vaadin.productionMode>
         <mainClass>com.alibaba.rsocket.broker.AlibabaRSocketBrokerServer</mainClass>
     </properties>
@@ -22,8 +23,17 @@
     <dependencies>
         <dependency>
             <groupId>com.alibaba.rsocket</groupId>
+            <artifactId>alibaba-rsocket-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.rsocket</groupId>
             <artifactId>alibaba-broker-spring-boot-starter</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -44,6 +54,21 @@
             <artifactId>spring-boot-starter-undertow</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.undertow</groupId>
+            <artifactId>undertow-core</artifactId>
+            <version>${undertow.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.undertow</groupId>
+            <artifactId>undertow-servlet</artifactId>
+            <version>${undertow.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.undertow</groupId>
+            <artifactId>undertow-websockets-jsr</artifactId>
+            <version>${undertow.version}</version>
+        </dependency>
+        <dependency>
             <groupId>com.vladsch.flexmark</groupId>
             <artifactId>flexmark-all</artifactId>
             <version>${flexmark-all.version}</version>
@@ -52,33 +77,6 @@
             <groupId>com.vaadin</groupId>
             <!-- Replace artifactId with vaadin-core to use only free components -->
             <artifactId>vaadin</artifactId>
-            <exclusions>
-                <!-- Webjars are only needed when running in Vaadin 13 compatibility mode -->
-                <exclusion>
-                    <groupId>com.vaadin.webjar</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.webjars.bowergithub.insites</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.webjars.bowergithub.polymer</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.webjars.bowergithub.polymerelements</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.webjars.bowergithub.vaadin</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.webjars.bowergithub.webcomponents</groupId>
-                    <artifactId>*</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.vaadin</groupId>
@@ -91,13 +89,6 @@
         <dependency>
             <groupId>com.vaadin</groupId>
             <artifactId>vaadin-spring-boot-starter</artifactId>
-            <exclusions>
-                <!-- Excluding so that webjars are not included. -->
-                <exclusion>
-                    <groupId>com.vaadin</groupId>
-                    <artifactId>vaadin-core</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
         <dependency>
             <groupId>com.vaadin</groupId>
@@ -115,12 +106,10 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
-        <!-- block hound-->
-        <!-- <dependency>
-             <groupId>io.projectreactor.tools</groupId>
-             <artifactId>blockhound</artifactId>
-             <version>1.0.1.RELEASE</version>
-         </dependency>-->
+        <dependency>
+            <groupId>io.lettuce</groupId>
+            <artifactId>lettuce-core</artifactId>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
@@ -144,6 +133,10 @@
                 <configuration>
                     <mainClass>${mainClass}</mainClass>
                     <jvmArguments>-Dvaadin.productionMode</jvmArguments>
+                    <image>
+                        <name>linuxchina/alibaba-rsocket-broker:${project.version}</name>
+                        <builder>paketobuildpacks/builder:full</builder>
+                    </image>
                 </configuration>
             </plugin>
             <plugin>
@@ -151,10 +144,10 @@
                 <artifactId>jib-maven-plugin</artifactId>
                 <configuration>
                     <from>
-                        <image>openjdk:8-jdk-slim</image>
+                        <image>adoptopenjdk:8-jdk-hotspot</image>
                     </from>
                     <to>
-                        <image>linuxchina/alibaba-rsocket-broker</image>
+                        <image>linuxchina/alibaba-rsocket-broker:${project.version}</image>
                     </to>
                     <container>
                         <mainClass>${mainClass}</mainClass>
@@ -200,6 +193,7 @@
                 <configuration>
                     <finalName>alibaba-rsocket-broker-${project.version}</finalName>
                     <appendAssemblyId>false</appendAssemblyId>
+                    <tarLongFileMode>posix</tarLongFileMode>
                     <descriptors>
                         <descriptor>${basedir}/src/main/build/assembly.xml</descriptor>
                     </descriptors>
@@ -217,4 +211,62 @@
         </plugins>
     </build>
 
+    <profiles>
+        <profile>
+            <id>k8s</id>
+            <dependencies>
+                <dependency>
+                    <groupId>org.springframework.cloud</groupId>
+                    <artifactId>spring-cloud-starter-kubernetes-fabric8</artifactId>
+                    <version>2.0.2</version>
+                </dependency>
+            </dependencies>
+
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.google.cloud.tools</groupId>
+                        <artifactId>jib-maven-plugin</artifactId>
+                        <configuration>
+                            <from>
+                                <image>adoptopenjdk:8-jdk-hotspot</image>
+                            </from>
+                            <to>
+                                <image>linuxchina/alibaba-rsocket-broker:${project.version}-k8s</image>
+                            </to>
+                            <container>
+                                <mainClass>${mainClass}</mainClass>
+                                <entrypoint>/bin/sh,/app/run-java.sh</entrypoint>
+                                <environment>
+                                    <JAVA_APP_DIR>/app</JAVA_APP_DIR>
+                                    <JAVA_CLASSPATH>
+                                        /app/libs/alibaba-rsocket-core-${project.version}.jar:/app/resources:/app/classes:/app/libs/*
+                                    </JAVA_CLASSPATH>
+                                    <JAVA_MAIN_CLASS>${mainClass}</JAVA_MAIN_CLASS>
+                                    <SPRING_PROFILES_ACTIVE>kubernetes</SPRING_PROFILES_ACTIVE>
+                                </environment>
+                                <ports>
+                                    <port>9997</port>
+                                    <port>9998</port>
+                                    <port>9999</port>
+                                </ports>
+                            </container>
+                        </configuration>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.springframework.boot</groupId>
+                        <artifactId>spring-boot-maven-plugin</artifactId>
+                        <configuration>
+                            <mainClass>${mainClass}</mainClass>
+                            <jvmArguments>-Dvaadin.productionMode</jvmArguments>
+                            <image>
+                                <name>linuxchina/alibaba-rsocket-broker:${project.version}-k8s</name>
+                                <builder>paketobuildpacks/builder:full</builder>
+                            </image>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

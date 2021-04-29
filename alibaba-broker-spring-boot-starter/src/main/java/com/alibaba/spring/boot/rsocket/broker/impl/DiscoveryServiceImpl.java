@@ -5,6 +5,8 @@ import com.alibaba.rsocket.discovery.DiscoveryService;
 import com.alibaba.rsocket.discovery.RSocketServiceInstance;
 import com.alibaba.rsocket.events.AppStatusEvent;
 import com.alibaba.rsocket.metadata.AppMetadata;
+import com.alibaba.spring.boot.rsocket.broker.cluster.RSocketBroker;
+import com.alibaba.spring.boot.rsocket.broker.cluster.RSocketBrokerManager;
 import com.alibaba.spring.boot.rsocket.broker.responder.RSocketBrokerHandlerRegistry;
 import com.alibaba.spring.boot.rsocket.broker.responder.RSocketBrokerResponderHandler;
 import com.alibaba.spring.boot.rsocket.broker.route.ServiceRoutingSelector;
@@ -28,9 +30,26 @@ public class DiscoveryServiceImpl implements DiscoveryService {
     private RSocketBrokerHandlerRegistry handlerRegistry;
     @Autowired
     private ServiceRoutingSelector routingSelector;
+    @Autowired
+    private RSocketBrokerManager rsocketBrokerManager;
 
     @Override
     public Flux<RSocketServiceInstance> getInstances(String serviceId) {
+        if (serviceId.equals("*")) {
+            return Flux.fromIterable(rsocketBrokerManager.currentBrokers())
+                    .filter(RSocketBroker::isActive)
+                    .map(broker -> {
+                        RSocketServiceInstance instance = new RSocketServiceInstance();
+                        instance.setInstanceId(broker.getId());
+                        instance.setHost(broker.getIp());
+                        instance.setServiceId("*");
+                        instance.setPort(broker.getPort());
+                        instance.setSchema(broker.getSchema());
+                        instance.setUri(broker.getUrl());
+                        instance.setSecure(broker.isActive());
+                        return instance;
+                    });
+        }
         return findServiceInstances(serviceId);
     }
 
@@ -71,10 +90,16 @@ public class DiscoveryServiceImpl implements DiscoveryService {
         serviceInstance.setInstanceId(appMetadata.getUuid());
         serviceInstance.setServiceId(appMetadata.getName());
         serviceInstance.setHost(appMetadata.getIp());
-        serviceInstance.setPort(appMetadata.getPort());
-        serviceInstance.setSchema(appMetadata.getSchema());
-        serviceInstance.setSecure(appMetadata.isSecure());
-        serviceInstance.setUri(appMetadata.getUri());
+        if (appMetadata.getWebPort() > 0) {
+            serviceInstance.setPort(appMetadata.getWebPort());
+            String schema = "http";
+            serviceInstance.setSecure(appMetadata.isSecure());
+            if (appMetadata.isSecure()) {
+                schema = "https";
+            }
+            serviceInstance.setSchema(schema);
+            serviceInstance.setUri(schema + "://" + appMetadata.getIp() + ":" + appMetadata.getWebPort());
+        }
         serviceInstance.setMetadata(appMetadata.getMetadata());
         return serviceInstance;
     }

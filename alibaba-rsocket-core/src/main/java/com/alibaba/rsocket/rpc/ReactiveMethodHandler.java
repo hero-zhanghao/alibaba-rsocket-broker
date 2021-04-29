@@ -1,12 +1,10 @@
 package com.alibaba.rsocket.rpc;
 
-import com.alibaba.rsocket.reactive.ReactiveAdapter;
 import com.alibaba.rsocket.reactive.ReactiveMethodSupport;
-import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Method;
-import java.util.Arrays;
-import java.util.List;
+
+import static com.alibaba.rsocket.constants.ReactiveStreamConstants.REACTIVE_STREAM_CLASSES;
 
 /**
  * reactive method handler
@@ -14,38 +12,40 @@ import java.util.List;
  * @author leijuan
  */
 public class ReactiveMethodHandler extends ReactiveMethodSupport {
-    List<String> REACTIVE_STREAM_CLASSES = Arrays.asList("io.reactivex.Flowable", "io.reactivex.Observable",
-            "io.reactivex.rxjava3.core.Observable", "io.reactivex.rxjava3.core.Flowable", "reactor.core.publisher.Flux",
-            "reactor.core.publisher.Mono", "io.reactivex.Maybe", "io.reactivex.Single", "io.reactivex.Completable", "java.util.concurrent.CompletableFuture",
-            "io.reactivex.rxjava3.core.Maybe", "io.reactivex.rxjava3.core.Single", "io.reactivex.rxjava3.core.Completable", "org.reactivestreams.Publisher");
+
     private Object handler;
+    private String serviceName;
     private boolean asyncReturn = false;
     private boolean binaryReturn;
-    private ReactiveAdapter reactiveAdapter;
+    private Class<?>[] parametersType;
 
-    public ReactiveMethodHandler(Class<?> serviceInterface, Method method, Object handler) {
+    public ReactiveMethodHandler(String serviceName, Method method, Object handler) {
         super(method);
         this.handler = handler;
+        this.serviceName = serviceName;
         this.method = method;
         this.method.setAccessible(true);
-        if (REACTIVE_STREAM_CLASSES.contains(this.returnType.getCanonicalName())) {
+        this.parametersType = this.method.getParameterTypes();
+        if (kotlinSuspend || REACTIVE_STREAM_CLASSES.contains(this.returnType.getCanonicalName())) {
             this.asyncReturn = true;
         }
         this.binaryReturn = this.inferredClassForReturn != null && BINARY_CLASS_LIST.contains(this.inferredClassForReturn);
-        this.reactiveAdapter = ReactiveAdapter.findAdapter(returnType.getCanonicalName());
     }
 
     public Object invoke(Object... args) throws Exception {
-        return method.invoke(this.handler, args);
-    }
-
-    @NotNull
-    public ReactiveAdapter getReactiveAdapter() {
-        return reactiveAdapter;
+        if (kotlinSuspend) {
+            return CoroutinesKt.suspendCallToMono(handler, method, args);
+        } else {
+            return method.invoke(this.handler, args);
+        }
     }
 
     public Class<?>[] getParameterTypes() {
-        return method.getParameterTypes();
+        return this.parametersType;
+    }
+
+    public void setParametersType(Class<?>[] parametersType) {
+        this.parametersType = parametersType;
     }
 
     public Class<?> getInferredClassForParameter(int paramIndex) {
@@ -56,7 +56,15 @@ public class ReactiveMethodHandler extends ReactiveMethodSupport {
         return asyncReturn;
     }
 
+    public void setAsyncReturn(boolean asyncReturn) {
+        this.asyncReturn = asyncReturn;
+    }
+
     public boolean isBinaryReturn() {
         return this.binaryReturn;
+    }
+
+    public String getServiceName() {
+        return serviceName;
     }
 }

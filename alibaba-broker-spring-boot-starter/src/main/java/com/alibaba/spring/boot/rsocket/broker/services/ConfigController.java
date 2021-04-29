@@ -1,15 +1,15 @@
 package com.alibaba.spring.boot.rsocket.broker.services;
 
-import com.alibaba.rsocket.RSocketAppContext;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
+import com.alibaba.rsocket.cloudevents.RSocketCloudEventBuilder;
 import com.alibaba.rsocket.events.ConfigEvent;
 import com.alibaba.rsocket.metadata.AppMetadata;
 import com.alibaba.rsocket.observability.RsocketErrorCode;
+import com.alibaba.spring.boot.rsocket.broker.BrokerAppContext;
 import com.alibaba.spring.boot.rsocket.broker.responder.RSocketBrokerHandlerRegistry;
 import com.alibaba.spring.boot.rsocket.broker.security.AuthenticationService;
 import com.alibaba.spring.boot.rsocket.broker.security.JwtPrincipal;
 import com.alibaba.spring.boot.rsocket.broker.security.RSocketAppPrincipal;
-import io.cloudevents.v1.CloudEventBuilder;
-import io.cloudevents.v1.CloudEventImpl;
 import io.rsocket.exceptions.InvalidException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,8 +18,6 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.net.URI;
-import java.time.ZonedDateTime;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.UUID;
@@ -51,13 +49,8 @@ public class ConfigController {
         if (appPrincipal != null && appPrincipal.getSubject().equalsIgnoreCase("rsocket-admin")) {
             //update config for ip or id
             if (ip != null || id != null) {
-                CloudEventImpl<ConfigEvent> configEvent = CloudEventBuilder.<ConfigEvent>builder()
-                        .withId(UUID.randomUUID().toString())
-                        .withTime(ZonedDateTime.now())
-                        .withSource(URI.create("broker://" + RSocketAppContext.ID))
-                        .withType(ConfigEvent.class.getCanonicalName())
-                        .withDataContentType("text/x-java-properties")
-                        .withData(new ConfigEvent(appName, "text/x-java-properties", body))
+                CloudEventImpl<ConfigEvent> configEvent = RSocketCloudEventBuilder.builder(new ConfigEvent(appName, "text/x-java-properties", body))
+                        .withSource(BrokerAppContext.identity())
                         .build();
                 return Flux.fromIterable(handlerRegistry.findByAppName(appName)).filter(handler -> {
                     AppMetadata appMetadata = handler.getAppMetadata();
@@ -85,7 +78,7 @@ public class ConfigController {
         if (authRequired) {
             return authenticationService.auth("Bearer", jwtToken.substring(jwtToken.indexOf(" ") + 1));
         } else {
-            return new JwtPrincipal("rsocket-admin",
+            return new JwtPrincipal(UUID.randomUUID().toString(), "rsocket-admin",
                     Collections.singletonList("mock_owner"),
                     new HashSet<>(Collections.singletonList("admin")),
                     Collections.emptySet(),

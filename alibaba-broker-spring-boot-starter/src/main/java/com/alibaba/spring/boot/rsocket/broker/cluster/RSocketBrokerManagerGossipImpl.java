@@ -1,6 +1,8 @@
 package com.alibaba.spring.boot.rsocket.broker.cluster;
 
 import com.alibaba.rsocket.ServiceLocator;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
+import com.alibaba.rsocket.cloudevents.Json;
 import com.alibaba.rsocket.observability.RsocketErrorCode;
 import com.alibaba.rsocket.route.RSocketFilter;
 import com.alibaba.rsocket.transport.NetworkUtil;
@@ -10,7 +12,6 @@ import com.alibaba.spring.boot.rsocket.broker.cluster.jsonrpc.JsonRpcResponse;
 import com.alibaba.spring.boot.rsocket.broker.events.AppConfigEvent;
 import com.alibaba.spring.boot.rsocket.broker.events.RSocketFilterEnableEvent;
 import com.alibaba.spring.boot.rsocket.broker.services.ConfigurationService;
-import io.cloudevents.v1.CloudEventImpl;
 import io.micrometer.core.instrument.Metrics;
 import io.scalecube.cluster.Cluster;
 import io.scalecube.cluster.ClusterImpl;
@@ -19,20 +20,24 @@ import io.scalecube.cluster.Member;
 import io.scalecube.cluster.membership.MembershipEvent;
 import io.scalecube.cluster.transport.api.Message;
 import io.scalecube.net.Address;
+import io.scalecube.transport.netty.tcp.TcpTransportFactory;
 import org.eclipse.collections.api.block.function.primitive.DoubleFunction;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.web.ServerProperties;
+import org.springframework.boot.web.server.GracefulShutdownCallback;
+import org.springframework.boot.web.server.GracefulShutdownResult;
+import org.springframework.boot.web.server.Shutdown;
 import org.springframework.context.ApplicationContext;
-import reactor.core.publisher.EmitterProcessor;
+import org.springframework.context.SmartLifecycle;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
-import javax.annotation.PostConstruct;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -42,7 +47,7 @@ import java.util.stream.Stream;
  *
  * @author leijuan
  */
-public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, ClusterMessageHandler, DisposableBean {
+public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, ClusterMessageHandler, SmartLifecycle {
     private Logger log = LoggerFactory.getLogger(RSocketBrokerManagerGossipImpl.class);
     /**
      * Gossip listen port
@@ -57,6 +62,9 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
     private ApplicationContext applicationContext;
     @Autowired
     private RSocketBrokerProperties brokerProperties;
+    @Autowired
+    private ServerProperties serverProperties;
+    private int status = 0;
 
     private Mono<Cluster> monoCluster;
     private RSocketBroker localBroker;
@@ -67,28 +75,12 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
     /**
      * brokers changes emitter processor
      */
-    private EmitterProcessor<Collection<RSocketBroker>> brokersEmitterProcessor = EmitterProcessor.create();
-
-    @PostConstruct
-    public void init() {
-        final String localIp = NetworkUtil.LOCAL_IP;
-        monoCluster = new ClusterImpl()
-                .config(clusterConfig -> clusterConfig.containerHost(localIp).containerPort(gossipListenPort))
-                .membership(membershipConfig -> membershipConfig.seedMembers(seedMembers()).syncInterval(5_000))
-                .transport(transportConfig -> transportConfig.host(localIp).port(gossipListenPort))
-                .handler(cluster1 -> this)
-                .start();
-        //subscribe and start & join the cluster
-        monoCluster.subscribe();
-        this.localBroker = new RSocketBroker(localIp, brokerProperties.getExternalDomain());
-        brokers.put(localIp, localBroker);
-        log.info(RsocketErrorCode.message("RST-300002"));
-        Metrics.globalRegistry.gauge("cluster.broker.count", this, (DoubleFunction<RSocketBrokerManagerGossipImpl>) brokerManagerGossip -> brokerManagerGossip.brokers.size());
-    }
+    private Sinks.Many<Collection<RSocketBroker>> brokersEmitterProcessor = Sinks.many().multicast().onBackpressureBuffer();
+    private KetamaConsistentHash<String> consistentHash;
 
     @Override
     public Flux<Collection<RSocketBroker>> requestAll() {
-        return brokersEmitterProcessor;
+        return brokersEmitterProcessor.asFlux();
     }
 
     @Override
@@ -116,6 +108,11 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
     }
 
     @Override
+    public String getName() {
+        return "gossip";
+    }
+
+    @Override
     public Boolean isStandAlone() {
         return false;
     }
@@ -132,13 +129,13 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
             JsonRpcRequest request = message.data();
             Message replyMessage = Message.builder()
                     .correlationId(message.correlationId())
-                    .data(OnJsonRpcCall(request))
+                    .data(onJsonRpcCall(request))
                     .build();
             this.monoCluster.flatMap(cluster -> cluster.send(message.sender(), replyMessage)).subscribe();
         }
     }
 
-    public JsonRpcResponse OnJsonRpcCall(JsonRpcRequest request) {
+    public JsonRpcResponse onJsonRpcCall(JsonRpcRequest request) {
         Object result;
         if (request.getMethod().equals("BrokerService.getConfiguration")) {
             Map<String, String> config = new HashMap<>();
@@ -163,14 +160,24 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
     @Override
     public void onGossip(Message gossip) {
         if (gossip.header("cloudevents") != null) {
-            onCloudEvent(gossip.data());
+            String javaClass = gossip.header("javaClass");
+            if (javaClass != null) {
+                try {
+                    Class<?> resultClass = Class.forName(javaClass);
+                    String jsonText = gossip.data();
+                    onCloudEvent(Json.decodeValue(jsonText, resultClass));
+                } catch (Exception ignore) {
+
+                }
+            }
         }
     }
 
-    public void onCloudEvent(CloudEventImpl<Object> cloudEvent) {
-        Optional<Object> cloudEventData = cloudEvent.getData();
+    public void onCloudEvent(CloudEventImpl<?> cloudEvent) {
+        String type = cloudEvent.getAttributes().getType();
+        Optional<?> cloudEventData = cloudEvent.getData();
         cloudEventData.ifPresent(data -> {
-            if (data instanceof RSocketFilterEnableEvent) {
+            if (RSocketFilterEnableEvent.class.getCanonicalName().equals(type)) {
                 try {
                     RSocketFilterEnableEvent filterEnableEvent = (RSocketFilterEnableEvent) data;
                     RSocketFilter rsocketFilter = (RSocketFilter) applicationContext.getBean(Class.forName(filterEnableEvent.getFilterClassName()));
@@ -190,7 +197,8 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
     public Mono<String> broadcast(CloudEventImpl<?> cloudEvent) {
         Message message = Message.builder()
                 .header("cloudevents", "true")
-                .data(cloudEvent)
+                .header("javaClass", cloudEvent.getAttributes().getType())
+                .data(Json.serializeAsText(cloudEvent))
                 .build();
         return monoCluster.flatMap(cluster -> cluster.spreadGossip(message));
     }
@@ -198,10 +206,11 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
     @Override
     public void onMembershipEvent(MembershipEvent event) {
         RSocketBroker broker = memberToBroker(event.member());
-        String brokerIp = event.member().address().host();
+        String brokerIp = broker.getIp();
         if (event.isAdded()) {
             makeJsonRpcCall(event.member(), "BrokerService.getConfiguration", null).subscribe(response -> {
-                brokers.put(broker.getIp(), broker);
+                brokers.put(brokerIp, broker);
+                this.consistentHash.add(brokerIp);
                 Map<String, String> brokerConfiguration = response.getResult();
                 if (brokerConfiguration != null && !brokerConfiguration.isEmpty()) {
                     String externalDomain = brokerConfiguration.get("rsocket.broker.externalDomain");
@@ -211,12 +220,14 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
             });
         } else if (event.isRemoved()) {
             brokers.remove(brokerIp);
+            this.consistentHash.remove(brokerIp);
             log.info(RsocketErrorCode.message("RST-300001", broker.getIp(), "removed"));
         } else if (event.isLeaving()) {
-            RSocketBroker leavingBroker = brokers.remove(brokerIp);
+            brokers.remove(brokerIp);
+            this.consistentHash.remove(brokerIp);
             log.info(RsocketErrorCode.message("RST-300001", broker.getIp(), "left"));
         }
-        brokersEmitterProcessor.onNext(brokers.values());
+        brokersEmitterProcessor.tryEmitNext(brokers.values());
     }
 
     private RSocketBroker memberToBroker(Member member) {
@@ -231,7 +242,58 @@ public class RSocketBrokerManagerGossipImpl implements RSocketBrokerManager, Clu
     }
 
     @Override
-    public void destroy() throws Exception {
-        this.stopLocalBroker();
+    public RSocketBroker findConsistentBroker(String clientId) {
+        String brokerIp = this.consistentHash.get(clientId);
+        return this.brokers.get(brokerIp);
+    }
+
+    @Override
+    public void start() {
+        final String localIp = NetworkUtil.LOCAL_IP;
+        monoCluster = new ClusterImpl()
+                .config(clusterConfig -> clusterConfig.externalHost(localIp).externalPort(gossipListenPort))
+                .membership(membershipConfig -> membershipConfig.seedMembers(seedMembers()).syncInterval(5_000))
+                .transportFactory(TcpTransportFactory::new)
+                .transport(transportConfig -> transportConfig.port(gossipListenPort))
+                .handler(cluster1 -> this)
+                .start();
+        //subscribe and start & join the cluster
+        monoCluster.subscribe();
+        this.localBroker = new RSocketBroker(localIp, brokerProperties.getExternalDomain());
+        this.consistentHash = new KetamaConsistentHash<>(12, Collections.singletonList(localIp));
+        brokers.put(localIp, localBroker);
+        log.info(RsocketErrorCode.message("RST-300002"));
+        Metrics.globalRegistry.gauge("cluster.broker.count", this, (DoubleFunction<RSocketBrokerManagerGossipImpl>) brokerManagerGossip -> brokerManagerGossip.brokers.size());
+        this.status = 1;
+    }
+
+    @Override
+    public void stop() {
+        throw new UnsupportedOperationException("Stop must not be invoked directly");
+    }
+
+    @Override
+    public void stop(final @NotNull Runnable callback) {
+        this.status = -1;
+        shutDownGracefully((result) -> callback.run());
+    }
+
+    @Override
+    public boolean isRunning() {
+        return status == 1;
+    }
+
+    void shutDownGracefully(GracefulShutdownCallback callback) {
+        try {
+            this.stopLocalBroker();
+            if (serverProperties.getShutdown() == Shutdown.GRACEFUL) {
+                // waiting for 15 seconds to broadcast shutdown message
+                Thread.sleep(15000);
+            }
+        } catch (Exception ignore) {
+
+        } finally {
+            callback.shutdownComplete(GracefulShutdownResult.IMMEDIATE);
+        }
     }
 }

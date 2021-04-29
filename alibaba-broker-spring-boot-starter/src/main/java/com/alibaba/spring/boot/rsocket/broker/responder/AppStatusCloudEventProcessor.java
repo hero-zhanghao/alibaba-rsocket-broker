@@ -1,26 +1,20 @@
 package com.alibaba.spring.boot.rsocket.broker.responder;
 
-import com.alibaba.rsocket.RSocketAppContext;
-import com.alibaba.rsocket.events.AppStatusEvent;
-import com.alibaba.rsocket.events.CloudEventSupport;
-import com.alibaba.rsocket.events.ConfigEvent;
-import com.alibaba.rsocket.events.ServicesExposedEvent;
+import com.alibaba.rsocket.ServiceLocator;
+import com.alibaba.rsocket.cloudevents.CloudEventImpl;
+import com.alibaba.rsocket.cloudevents.RSocketCloudEventBuilder;
+import com.alibaba.rsocket.events.*;
 import com.alibaba.rsocket.metadata.AppMetadata;
+import com.alibaba.spring.boot.rsocket.broker.BrokerAppContext;
 import com.alibaba.spring.boot.rsocket.broker.services.ConfigurationService;
-import io.cloudevents.v1.CloudEventBuilder;
-import io.cloudevents.v1.CloudEventImpl;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import reactor.core.Disposable;
-import reactor.extra.processor.TopicProcessor;
+import reactor.core.publisher.Sinks;
 
-import java.net.URI;
-import java.time.ZonedDateTime;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
+import java.util.Set;
 
 /**
  * App status cloud event processor
@@ -28,10 +22,10 @@ import java.util.UUID;
  * @author leijuan
  */
 public class AppStatusCloudEventProcessor {
-    private Logger log = LoggerFactory.getLogger(AppStatusCloudEventProcessor.class);
+    @SuppressWarnings("rawtypes")
     @Autowired
     @Qualifier("reactiveCloudEventProcessor")
-    private TopicProcessor<CloudEventImpl> eventProcessor;
+    private Sinks.Many<CloudEventImpl> eventProcessor;
     @Autowired
     private RSocketBrokerHandlerRegistry rsocketBrokerHandlerRegistry;
     @Autowired
@@ -39,12 +33,16 @@ public class AppStatusCloudEventProcessor {
     private Map<String, Disposable> listeners = new HashMap<>();
 
     public void init() {
-        eventProcessor.subscribe(cloudEvent -> {
+        eventProcessor.asFlux().subscribe(cloudEvent -> {
             String type = cloudEvent.getAttributes().getType();
             if (AppStatusEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
                 handleAppStatusEvent(cloudEvent);
+            } else if (PortsUpdateEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
+                handlerPortsUpdateEvent(cloudEvent);
             } else if (ServicesExposedEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
                 handleServicesExposedEvent(cloudEvent);
+            } else if (ServicesHiddenEvent.class.getCanonicalName().equalsIgnoreCase(type)) {
+                handleServicesHiddenEvent(cloudEvent);
             }
         });
     }
@@ -74,13 +72,8 @@ public class AppStatusCloudEventProcessor {
         String appName = appMetadata.getName();
         if (!listeners.containsKey(appName)) {
             listeners.put(appName, configurationService.watch(appName).subscribe(config -> {
-                CloudEventImpl<ConfigEvent> configEvent = CloudEventBuilder.<ConfigEvent>builder()
-                        .withId(UUID.randomUUID().toString())
-                        .withTime(ZonedDateTime.now())
-                        .withSource(URI.create("broker://" + RSocketAppContext.ID))
-                        .withType(ConfigEvent.class.getCanonicalName())
-                        .withDataContentType("text/x-java-properties")
-                        .withData(new ConfigEvent(appName, "text/x-java-properties", config))
+                CloudEventImpl<ConfigEvent> configEvent = RSocketCloudEventBuilder.builder(new ConfigEvent(appName, "text/x-java-properties", config))
+                        .withSource(BrokerAppContext.identity())
                         .build();
                 rsocketBrokerHandlerRegistry.broadcast(appName, configEvent).subscribe();
             }));
@@ -92,8 +85,33 @@ public class AppStatusCloudEventProcessor {
         if (servicesExposedEvent != null && servicesExposedEvent.getAppId().equals(cloudEvent.getAttributes().getSource().getHost())) {
             RSocketBrokerResponderHandler responderHandler = rsocketBrokerHandlerRegistry.findByUUID(servicesExposedEvent.getAppId());
             if (responderHandler != null) {
-                responderHandler.setPeerServices(servicesExposedEvent.getServices());
-                responderHandler.registerPublishedServices();
+                Set<ServiceLocator> services = servicesExposedEvent.getServices();
+                responderHandler.setAppStatus(AppStatusEvent.STATUS_SERVING);
+                responderHandler.registerServices(services);
+            }
+        }
+    }
+
+    public void handleServicesHiddenEvent(CloudEventImpl<?> cloudEvent) {
+        ServicesHiddenEvent servicesHiddenEvent = CloudEventSupport.unwrapData(cloudEvent, ServicesHiddenEvent.class);
+        if (servicesHiddenEvent != null && servicesHiddenEvent.getAppId().equals(cloudEvent.getAttributes().getSource().getHost())) {
+            RSocketBrokerResponderHandler responderHandler = rsocketBrokerHandlerRegistry.findByUUID(servicesHiddenEvent.getAppId());
+            if (responderHandler != null) {
+                Set<ServiceLocator> services = servicesHiddenEvent.getServices();
+                responderHandler.unRegisterServices(services);
+            }
+        }
+    }
+
+    public void handlerPortsUpdateEvent(CloudEventImpl<?> cloudEvent) {
+        PortsUpdateEvent portsUpdateEvent = CloudEventSupport.unwrapData(cloudEvent, PortsUpdateEvent.class);
+        if (portsUpdateEvent != null) {
+            RSocketBrokerResponderHandler responderHandler = rsocketBrokerHandlerRegistry.findByUUID(portsUpdateEvent.getAppId());
+            if (responderHandler != null) {
+                AppMetadata appMetadata = responderHandler.getAppMetadata();
+                appMetadata.setWebPort(portsUpdateEvent.getWebPort());
+                appMetadata.setManagementPort(portsUpdateEvent.getManagementPort());
+                appMetadata.setRsocketPorts(portsUpdateEvent.getRsocketPorts());
             }
         }
     }
